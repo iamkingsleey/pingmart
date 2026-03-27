@@ -1,0 +1,89 @@
+/**
+ * WhatsApp Cloud API webhook handlers.
+ * GET  /webhooks/whatsapp — Meta verification (one-time setup)
+ * POST /webhooks/whatsapp — Incoming messages (must respond 200 immediately)
+ */
+import { Request, Response } from 'express';
+import { env } from '../config/env';
+import { logger, maskPhone } from '../utils/logger';
+import { incomingMessageQueue } from '../queues/incomingMessage.queue';
+import { messageQueue } from '../queues/message.queue';
+import { WhatsAppWebhookPayload, WhatsAppMessage } from '../types/whatsapp';
+import { msgFallback } from '../services/whatsapp/templates';
+import { normalisePhone } from '../utils/formatters';
+
+export function handleWhatsAppVerification(req: Request, res: Response): void {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
+    logger.info('WhatsApp webhook verified');
+    res.status(200).send(challenge);
+  } else {
+    logger.warn('WhatsApp webhook verification failed');
+    res.status(403).json({ error: 'Verification failed' });
+  }
+}
+
+export async function handleWhatsAppWebhook(req: Request, res: Response): Promise<void> {
+  // Always respond 200 first — Meta will retry if we take too long
+  res.status(200).json({ status: 'received' });
+
+  const payload = req.body as WhatsAppWebhookPayload;
+
+  try {
+    for (const entry of payload.entry ?? []) {
+      for (const change of entry.changes ?? []) {
+        const value = change.value;
+        if (!value.messages?.length) continue;
+
+        // Verify this message is for our registered phone number
+        if (value.metadata?.phone_number_id !== env.WHATSAPP_PHONE_NUMBER_ID) continue;
+
+        // Normalise display_phone_number to E.164 — Meta sends it with spaces/dashes
+        // e.g. "+1 555-193-1414" → "+15551931414" so it matches the vendor DB record
+        const rawDisplayNumber = value.metadata.display_phone_number;
+        if (!rawDisplayNumber) continue;
+        const vendorDisplayNumber = normalisePhone(rawDisplayNumber);
+
+        for (const message of value.messages) {
+          await routeIncomingMessage(message, vendorDisplayNumber);
+        }
+      }
+    }
+  } catch (err) {
+    logger.error('WhatsApp webhook processing error', { error: (err as Error).message });
+  }
+}
+
+async function routeIncomingMessage(
+  message: WhatsAppMessage,
+  vendorWhatsAppNumber: string,
+): Promise<void> {
+  const from = message.from;
+  logger.info('Incoming WhatsApp message', { from: maskPhone(from), type: message.type, id: message.id });
+
+  let textContent: string | null = null;
+
+  if (message.type === 'text' && message.text?.body) {
+    textContent = message.text.body;
+  } else if (message.type === 'interactive') {
+    const reply = message.interactive?.button_reply ?? message.interactive?.list_reply;
+    if (reply) textContent = reply.title;
+  } else {
+    // Unsupported message type — send fallback
+    await messageQueue.add({ to: from, message: msgFallback() });
+    return;
+  }
+
+  if (!textContent) return;
+
+  await incomingMessageQueue.add({
+    from,
+    message: textContent,
+    vendorWhatsAppNumber,
+    messageId: message.id,
+    timestamp: message.timestamp,
+  });
+}

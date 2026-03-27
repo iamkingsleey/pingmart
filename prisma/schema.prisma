@@ -1,0 +1,217 @@
+// WhatsApp Order Management Bot v2 — Prisma Schema
+//
+// Supports TWO vendor types:
+//   PHYSICAL_GOODS — food, fashion, provisions. Requires delivery coordination.
+//   DIGITAL_PRODUCTS — courses, ebooks, templates. Instant delivery after payment.
+//   HYBRID — sells both. Gets a combined catalog with type labels.
+//
+// Rules:
+//   - All monetary values stored in KOBO (integer). Display in ₦ at the app layer.
+//   - Phone numbers in international format: +2348012345678
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Vendor ──────────────────────────────────────────────────────────────────
+
+model Vendor {
+  id             String     @id @default(uuid())
+  businessName   String
+  whatsappNumber String     @unique
+  phoneNumber    String
+  vendorType     VendorType @default(PHYSICAL_GOODS)
+  // API key stored as bcrypt hash — never plaintext
+  apiKeyHash     String
+  isActive       Boolean    @default(true)
+  isVerified     Boolean    @default(false)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  products  Product[]
+  orders    Order[]
+  sessions  ConversationSession[]
+
+  @@map("vendors")
+}
+
+// ─── Product ─────────────────────────────────────────────────────────────────
+// Unified product model for both physical and digital items.
+// Digital-only fields are nullable and ignored for physical products.
+
+model Product {
+  id          String      @id @default(uuid())
+  vendorId    String
+  name        String
+  description String?
+  // Price in kobo (e.g. ₦15,000 = 1500000)
+  price       Int
+  category    String      @default("General")
+  productType ProductType @default(PHYSICAL)
+  imageUrl    String?
+  isAvailable Boolean     @default(true)
+
+  // ── Physical product fields ──────────────────────────────────────────────
+  // null = unlimited stock; 0 = out of stock
+  stockCount  Int?
+
+  // ── Digital product fields ───────────────────────────────────────────────
+  // How the product is delivered: a URL link or a Cloudinary-hosted file
+  deliveryType    DeliveryType? // LINK or FILE — null for physical products
+  // The actual URL/link to send the customer (Cloudinary URL or external link)
+  deliveryContent String?
+  // Custom message sent to customer along with the link, e.g. "Welcome aboard!"
+  deliveryMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vendor     Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+
+  @@index([vendorId])
+  @@index([vendorId, isAvailable])
+  @@index([vendorId, productType])
+  @@map("products")
+}
+
+// ─── Customer ────────────────────────────────────────────────────────────────
+
+model Customer {
+  id             String   @id @default(uuid())
+  whatsappNumber String   @unique
+  name           String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  orders   Order[]
+  sessions ConversationSession[]
+
+  @@map("customers")
+}
+
+// ─── Order ───────────────────────────────────────────────────────────────────
+// orderType determines the status flow and delivery logic.
+// deliveryAddress is only set for PHYSICAL orders.
+
+model Order {
+  id                String      @id @default(uuid())
+  vendorId          String
+  customerId        String
+  orderType         OrderType   @default(PHYSICAL)
+  status            OrderStatus @default(PENDING_PAYMENT)
+  // Total amount in kobo
+  totalAmount       Int
+  // Physical orders only — null for digital
+  deliveryAddress   String?
+  notes             String?
+  // Unique Paystack reference — used for idempotent webhook processing
+  paystackReference String      @unique
+  // Set to true after first successful payment webhook to prevent double-processing
+  paymentProcessed  Boolean     @default(false)
+  // For digital orders: track whether automatic delivery succeeded
+  digitalDelivered  Boolean     @default(false)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  vendor     Vendor      @relation(fields: [vendorId], references: [id])
+  customer   Customer    @relation(fields: [customerId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([vendorId])
+  @@index([customerId])
+  @@index([status])
+  @@index([orderType])
+  @@index([paystackReference])
+  @@map("orders")
+}
+
+// ─── OrderItem ───────────────────────────────────────────────────────────────
+// unitPrice snapshots the price at order time so historical amounts are stable.
+
+model OrderItem {
+  id        String @id @default(uuid())
+  orderId   String
+  productId String
+  quantity  Int
+  // Price in kobo at the moment the order was placed
+  unitPrice Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+// ─── ConversationSession ─────────────────────────────────────────────────────
+// Tracks each customer's position in the conversation state machine.
+// One session per customer per vendor — upserted on each message.
+
+model ConversationSession {
+  id             String            @id @default(uuid())
+  whatsappNumber String
+  vendorId       String
+  state          ConversationState @default(IDLE)
+  // JSON blob: { cart, pendingProductId, deliveryAddress, activeOrderType, ... }
+  sessionData    Json              @default("{}")
+  expiresAt      DateTime
+  updatedAt      DateTime          @updatedAt
+
+  vendor   Vendor   @relation(fields: [vendorId], references: [id])
+  customer Customer @relation(fields: [whatsappNumber], references: [whatsappNumber])
+
+  // One active session per customer per vendor
+  @@unique([whatsappNumber, vendorId])
+  @@index([whatsappNumber])
+  @@index([expiresAt])
+  @@map("conversation_sessions")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum VendorType {
+  PHYSICAL_GOODS
+  DIGITAL_PRODUCTS
+  HYBRID
+}
+
+enum ProductType {
+  PHYSICAL
+  DIGITAL
+}
+
+enum DeliveryType {
+  LINK  // External URL or platform link (e.g. Google Drive, YouTube, Selar)
+  FILE  // Cloudinary-hosted file URL
+}
+
+enum OrderType {
+  PHYSICAL
+  DIGITAL
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT   // Order created, awaiting payment
+  PAYMENT_CONFIRMED // Paystack confirmed payment
+  CONFIRMED         // Vendor confirmed the order (physical only)
+  PREPARING         // Vendor is preparing the order (physical only)
+  READY             // Order ready for pickup/delivery (physical only)
+  DELIVERED         // Physical order delivered
+  DIGITAL_SENT      // Digital product delivered to customer
+  CANCELLED         // Order cancelled (by vendor or system)
+}
+
+enum ConversationState {
+  IDLE             // No active conversation
+  BROWSING         // Viewing catalog
+  ORDERING         // Adding items to cart (physical) or viewing product detail (digital)
+  AWAITING_ADDRESS // Waiting for delivery address (physical only)
+  AWAITING_PAYMENT // Payment link sent, waiting for Paystack webhook
+  COMPLETED        // Order placed and confirmed — ready for fresh start
+}

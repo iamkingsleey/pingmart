@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "API Server (dev)",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["ts-node-dev", "--respawn", "--transpile-only", "src/server.ts"],
+      "port": 3000
+    },
+    {
+      "name": "Dashboard (dev)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "dashboard",
+      "port": 5173
+    }
+  ]
+}
