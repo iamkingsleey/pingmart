@@ -31,6 +31,10 @@ export const vendorRepository = {
   async existsByWhatsAppNumber(whatsappNumber: string): Promise<boolean> {
     return (await prisma.vendor.count({ where: { whatsappNumber } })) > 0;
   },
+
+  async findAllActive(): Promise<Vendor[]> {
+    return prisma.vendor.findMany({ where: { isActive: true } });
+  },
 };
 
 export type { Vendor };

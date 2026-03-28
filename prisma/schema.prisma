@@ -30,14 +30,45 @@ model Vendor {
   apiKeyHash     String
   isActive       Boolean    @default(true)
   isVerified     Boolean    @default(false)
+
+  // ── Working hours ────────────────────────────────────────────────────────
+  // Times in 24-hour "HH:MM" format, interpreted in vendor's timezone.
+  // workingDays: comma-separated day numbers (0=Sun, 1=Mon … 6=Sat)
+  workingHoursStart    String?  @default("08:00")
+  workingHoursEnd      String?  @default("21:00")
+  workingDays          String?  @default("1,2,3,4,5,6")
+  timezone             String?  @default("Africa/Lagos")
+  // When true, the store is treated as always open regardless of hours
+  acceptOffHoursOrders Boolean  @default(false)
+
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  products  Product[]
-  orders    Order[]
-  sessions  ConversationSession[]
+  products         Product[]
+  orders           Order[]
+  sessions         ConversationSession[]
+  offHoursContacts OffHoursContact[]
 
   @@map("vendors")
+}
+
+// ─── OffHoursContact ─────────────────────────────────────────────────────────
+// Records each customer who messaged while the store was closed.
+// Used by the opening-time notification job to send "we're open now!" messages.
+
+model OffHoursContact {
+  id            String   @id @default(uuid())
+  vendorId      String
+  customerPhone String
+  contactedAt   DateTime @default(now())
+  // Flipped to true once the opening notification has been sent
+  notifiedOpen  Boolean  @default(false)
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, notifiedOpen])
+  @@index([vendorId, contactedAt])
+  @@map("off_hours_contacts")
 }
 
 // ─── Product ─────────────────────────────────────────────────────────────────

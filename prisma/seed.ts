@@ -38,15 +38,26 @@ async function seedPhysicalVendor() {
 
   const vendor = await prisma.vendor.upsert({
     where: { whatsappNumber: '+2348011111111' },
-    update: {},
+    update: {
+      workingHoursStart:    '08:00',
+      workingHoursEnd:      '21:00',
+      workingDays:          '1,2,3,4,5,6',
+      timezone:             'Africa/Lagos',
+      acceptOffHoursOrders: false,
+    },
     create: {
-      businessName: "Mama Tee's Kitchen",
-      whatsappNumber: '+2348011111111',
-      phoneNumber: '+2348011111111',
-      vendorType: VendorType.PHYSICAL_GOODS,
+      businessName:         "Mama Tee's Kitchen",
+      whatsappNumber:       '+2348011111111',
+      phoneNumber:          '+2348011111111',
+      vendorType:           VendorType.PHYSICAL_GOODS,
       apiKeyHash,
-      isActive: true,
-      isVerified: true,
+      isActive:             true,
+      isVerified:           true,
+      workingHoursStart:    '08:00',
+      workingHoursEnd:      '21:00',
+      workingDays:          '1,2,3,4,5,6',
+      timezone:             'Africa/Lagos',
+      acceptOffHoursOrders: false,
     },
   });
 
@@ -115,15 +126,26 @@ async function seedDigitalVendor() {
 
   const vendor = await prisma.vendor.upsert({
     where: { whatsappNumber: '+2348022222222' },
-    update: {},
+    update: {
+      workingHoursStart:    '08:00',
+      workingHoursEnd:      '21:00',
+      workingDays:          '1,2,3,4,5,6',
+      timezone:             'Africa/Lagos',
+      acceptOffHoursOrders: false,
+    },
     create: {
-      businessName: 'TechSkills Academy',
-      whatsappNumber: '+2348022222222',
-      phoneNumber: '+2348022222222',
-      vendorType: VendorType.DIGITAL_PRODUCTS,
+      businessName:         'TechSkills Academy',
+      whatsappNumber:       '+2348022222222',
+      phoneNumber:          '+2348022222222',
+      vendorType:           VendorType.DIGITAL_PRODUCTS,
       apiKeyHash,
-      isActive: true,
-      isVerified: true,
+      isActive:             true,
+      isVerified:           true,
+      workingHoursStart:    '08:00',
+      workingHoursEnd:      '21:00',
+      workingDays:          '1,2,3,4,5,6',
+      timezone:             'Africa/Lagos',
+      acceptOffHoursOrders: false,
     },
   });
 

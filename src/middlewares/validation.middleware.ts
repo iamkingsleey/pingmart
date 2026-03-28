@@ -65,6 +65,20 @@ export const updateProductSchema = z.object({
   deliveryMessage: z.string().max(2000).optional(),
 });
 
+const timeHHMM = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Must be HH:MM in 24-hour format');
+
+export const updateWorkingHoursSchema = z.object({
+  workingHoursStart:    timeHHMM.optional(),
+  workingHoursEnd:      timeHHMM.optional(),
+  // Comma-separated day numbers 0-6, e.g. "1,2,3,4,5,6" (Mon–Sat)
+  workingDays:          z
+    .string()
+    .regex(/^[0-6](,[0-6])*$/, 'Must be comma-separated day numbers 0–6, e.g. "1,2,3,4,5,6"')
+    .optional(),
+  timezone:             z.string().min(1).max(100).optional(),
+  acceptOffHoursOrders: z.boolean().optional(),
+});
+
 export const orderFilterSchema = z.object({
   status: z.enum(['PENDING_PAYMENT','PAYMENT_CONFIRMED','CONFIRMED','PREPARING','READY','DELIVERED','DIGITAL_SENT','CANCELLED']).optional(),
   orderType: z.enum(['PHYSICAL', 'DIGITAL']).optional(),

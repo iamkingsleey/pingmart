@@ -3,12 +3,14 @@ import { requireApiKey, requireVendorOwnership } from '../middlewares/auth.middl
 import {
   validate, createVendorSchema, updateVendorSchema,
   createProductSchema, updateProductSchema, orderFilterSchema,
+  updateWorkingHoursSchema,
 } from '../middlewares/validation.middleware';
 import { uploadDigitalFile, uploadCoverImage } from '../middlewares/upload.middleware';
 import {
   registerVendor, getVendor, updateVendor,
   addProduct, updateProduct, deleteProduct, getProducts,
   uploadProductCover, getVendorOrders, getOrderDetail,
+  getWorkingHours, updateWorkingHours,
 } from '../controllers/vendor.controller';
 
 const router = Router();
@@ -44,6 +46,10 @@ router.post(
   uploadCoverImage,
   uploadProductCover,
 );
+
+// Working hours
+router.get('/:vendorId/hours', requireApiKey, requireVendorOwnership, getWorkingHours);
+router.patch('/:vendorId/hours', requireApiKey, requireVendorOwnership, validate(updateWorkingHoursSchema), updateWorkingHours);
 
 // Orders
 router.get('/:vendorId/orders', requireApiKey, requireVendorOwnership, validate(orderFilterSchema, 'query'), getVendorOrders);

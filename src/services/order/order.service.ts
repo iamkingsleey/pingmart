@@ -51,6 +51,8 @@ import { logger, maskPhone, maskReference } from '../../utils/logger';
 import { messageQueue } from '../../queues/message.queue';
 import { digitalDeliveryQueue } from '../../queues/digitalDelivery.queue';
 import { normaliseMessage } from '../nlp-router.service';
+import { getStoreStatus } from '../../utils/working-hours';
+import { offHoursContactRepository } from '../../repositories/offHoursContact.repository';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -71,6 +73,28 @@ export async function processIncomingMessage(
   try {
     const vendor = await vendorRepository.findByWhatsAppNumber(vendorWhatsAppNumber);
     if (!vendor?.isActive) { logger.warn('Message for unknown/inactive vendor', ctx); return; }
+
+    // ── Working hours gate — respond before any other processing ─────────────
+    const storeStatus = getStoreStatus(vendor);
+    if (!storeStatus.isOpen) {
+      await messageQueue.add(
+        {
+          to: from,
+          message:
+            `Hi! 👋 We're currently closed.\n\n` +
+            `🕐 We open at *${storeStatus.opensAt}* (Lagos time).\n\n` +
+            `Your message has been noted — feel free to browse our menu when we open. Type *MENU* anytime. 😊`,
+        },
+        { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true },
+      );
+      await offHoursContactRepository.record(from, vendor.id);
+      logger.info('Off-hours message received', {
+        customer: maskPhone(from),
+        vendorId: vendor.id,
+        storeStatus: storeStatus.message,
+      });
+      return;
+    }
 
     const { customer } = await customerRepository.findOrCreate(from);
     const products = await productRepository.findAvailableByVendor(vendor.id);

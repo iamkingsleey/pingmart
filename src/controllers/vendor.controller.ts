@@ -8,6 +8,7 @@ import { catalogService } from '../services/catalog/catalog.service';
 import { orderRepository } from '../repositories/order.repository';
 import { uploadDigitalProduct, uploadCoverImage } from '../utils/cloudinary';
 import { CreateVendorDto, UpdateVendorDto, CreateProductDto, UpdateProductDto, ApiSuccessResponse, DeliveryType } from '../types';
+import { vendorRepository } from '../repositories/vendor.repository';
 
 // ─── Vendor ───────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,41 @@ export async function uploadProductCover(req: Request, res: Response, next: Next
     const url = await uploadCoverImage(req.file.path);
     fs.unlink(req.file.path, () => undefined);
     res.json({ success: true, data: { imageUrl: url } } satisfies ApiSuccessResponse);
+  } catch (err) { next(err); }
+}
+
+// ─── Working Hours ────────────────────────────────────────────────────────────
+
+export async function getWorkingHours(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const vendor = await vendorRepository.findById(req.params['vendorId']!);
+    if (!vendor) { res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Vendor not found' } }); return; }
+    res.json({
+      success: true,
+      data: {
+        workingHoursStart:    vendor.workingHoursStart,
+        workingHoursEnd:      vendor.workingHoursEnd,
+        workingDays:          vendor.workingDays,
+        timezone:             vendor.timezone,
+        acceptOffHoursOrders: vendor.acceptOffHoursOrders,
+      },
+    } satisfies ApiSuccessResponse);
+  } catch (err) { next(err); }
+}
+
+export async function updateWorkingHours(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const updated = await vendorRepository.update(req.params['vendorId']!, req.body);
+    res.json({
+      success: true,
+      data: {
+        workingHoursStart:    updated.workingHoursStart,
+        workingHoursEnd:      updated.workingHoursEnd,
+        workingDays:          updated.workingDays,
+        timezone:             updated.timezone,
+        acceptOffHoursOrders: updated.acceptOffHoursOrders,
+      },
+    } satisfies ApiSuccessResponse);
   } catch (err) { next(err); }
 }
 
