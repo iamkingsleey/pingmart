@@ -91,6 +91,11 @@ export interface SessionData {
   // ── NLU state ─────────────────────────────────────────────────────────────
   /** Product shown during an availability check — waiting for customer YES/NO */
   nlpPendingProductId?: string;
+  /**
+   * Set after a not-found response that asks "would you like to see the menu?".
+   * An affirmative reply (yes, ok, sure, please…) is treated as MENU instead of CONFIRM.
+   */
+  awaitingMenuConfirmation?: boolean;
 }
 
 // ─── API Contracts ────────────────────────────────────────────────────────────

@@ -139,6 +139,21 @@ export async function processIncomingMessage(
     const reorderHandled = await handleReorderReply(from, rawMessage, vendor.id, customer.id, products);
     if (reorderHandled) return;
 
+    // ── Affirmative reply after not-found: "yes" → show menu ─────────────────
+    // When the bot asks "would you like to see the menu?" after a not-found reply,
+    // any affirmative answer (yes, ok, sure, please…) should show the catalog.
+    if (currentData.awaitingMenuConfirmation) {
+      const affirmative = /^\s*(yes|yeah|yep|yea|ok|okay|sure|please|alright|go ahead|show me)\b/i.test(rawMessage);
+      if (affirmative) {
+        const result = await runStateMachine('MENU', ConversationState.IDLE, { ...currentData, awaitingMenuConfirmation: undefined }, vendor, products, language);
+        await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
+        for (const msg of result.messages) await enqueue(from, msg);
+        return;
+      }
+      // Non-affirmative reply — clear the flag and continue normal processing
+      await sessionRepository.upsert(from, vendor.id, currentState, { ...currentData, awaitingMenuConfirmation: undefined });
+    }
+
     // ── Bug 3: YES after availability check → add the pending NLU product ─────
     if (rawMessage.trim().toUpperCase() === 'YES' && currentData.nlpPendingProductId) {
       const pendingProduct = products.find((p) => p.id === currentData.nlpPendingProductId);
@@ -175,10 +190,11 @@ export async function processIncomingMessage(
     if (messageToProcess.startsWith('PRICE:')) {
       const productId = messageToProcess.slice(6);
       if (productId === 'NOT_FOUND') {
-        // Clear any stale pending product so a subsequent order doesn't auto-select
+        // Clear any stale pending product; set flag so an affirmative reply shows the menu
         await sessionRepository.upsert(from, vendor.id, currentState, {
           ...currentData,
           nlpPendingProductId: undefined,
+          awaitingMenuConfirmation: true,
         });
         const productNames = products.map((p) => p.name);
         const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName);
@@ -200,13 +216,14 @@ export async function processIncomingMessage(
 
     // ── Bug 2: ORDER:NOT_FOUND — clear stale selections, reply, stop early ───────
     if (messageToProcess === 'ORDER:NOT_FOUND') {
-      // Clear all stale product state so a later order doesn't auto-select
+      // Clear all stale product state; set flag so an affirmative reply shows the menu
       await sessionRepository.upsert(from, vendor.id, currentState, {
         ...currentData,
         nlpPendingProductId: undefined,
         pendingProductId: undefined,
         pendingProductName: undefined,
         pendingProductPrice: undefined,
+        awaitingMenuConfirmation: true,
       });
       const productNames = products.map((p) => p.name);
       const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName);
