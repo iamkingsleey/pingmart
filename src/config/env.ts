@@ -45,6 +45,9 @@ const envSchema = z.object({
 
   // Re-order Engine
   REORDER_DAYS_AFTER: z.string().default('7'),
+
+  // Groq — Voice note transcription via Whisper
+  GROQ_API_KEY: z.string().min(1),
 });
 
 const parsed = envSchema.safeParse(process.env);

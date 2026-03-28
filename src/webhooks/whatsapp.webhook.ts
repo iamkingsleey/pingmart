@@ -13,6 +13,8 @@ import { msgFallback } from '../services/whatsapp/templates';
 import { normalisePhone } from '../utils/formatters';
 import { customerRepository } from '../repositories/customer.repository';
 import { Language } from '../i18n';
+import { transcribeVoiceNote } from '../services/transcription.service';
+import { redis } from '../utils/redis';
 
 export function handleWhatsAppVerification(req: Request, res: Response): void {
   const mode = req.query['hub.mode'];
@@ -70,11 +72,62 @@ async function routeIncomingMessage(
 
   if (message.type === 'text' && message.text?.body) {
     textContent = message.text.body;
+
   } else if (message.type === 'interactive') {
     const reply = message.interactive?.button_reply ?? message.interactive?.list_reply;
     if (reply) textContent = reply.title;
+
+  } else if (message.type === 'audio' && message.audio?.id) {
+    // ── Voice note — transcribe via Groq Whisper then process as text ────────
+    const mediaId  = message.audio.id;
+    const mimeType = (message.audio.mime_type ?? 'audio/ogg').split(';')[0].trim();
+
+    // Rate limit: 5 voice notes per customer per hour (guard against Groq quota burn)
+    const rateKey = `transcription:${from}`;
+    const count   = await redis.incr(rateKey);
+    if (count === 1) await redis.expire(rateKey, 3600);
+
+    if (count > 5) {
+      await messageQueue.add({
+        to: from,
+        message: "You've sent a lot of voice notes! Please type your order instead. 😊",
+      });
+      return;
+    }
+
+    // Acknowledge receipt while transcription runs (takes 1–3 s)
+    await messageQueue.add({ to: from, message: '🎙️ Got your voice note! Give me a second...' });
+
+    const transcription = await transcribeVoiceNote(mediaId, mimeType);
+    if (!transcription) {
+      await messageQueue.add({
+        to: from,
+        message: "Sorry, I couldn't understand that voice note. Could you type your order instead? 😊",
+      });
+      return;
+    }
+
+    // Echo back so customer can confirm what was heard
+    await messageQueue.add({
+      to: from,
+      message: `🎙️ I heard: _"${transcription}"_\n\nProcessing your request...`,
+    });
+
+    textContent = transcription; // falls through to queue below
+
+  } else if (message.type === 'image') {
+    // Images outside the payment flow get a helpful nudge
+    const customer = await customerRepository.findByWhatsAppNumber(from);
+    const lang = (customer?.language as Language | undefined) ?? 'en';
+    await messageQueue.add({
+      to: from,
+      message: "Thanks for the image! 📸 To place an order, just type *MENU* to see what's available. 😊",
+    });
+    logger.info('Image message ignored', { from: maskPhone(from), lang });
+    return;
+
   } else {
-    // Unsupported message type — send fallback in customer's chosen language
+    // Stickers, documents, contacts, location, and anything else
     const customer = await customerRepository.findByWhatsAppNumber(from);
     const lang = (customer?.language as Language | undefined) ?? 'en';
     await messageQueue.add({ to: from, message: msgFallback(lang) });

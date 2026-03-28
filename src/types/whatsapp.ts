@@ -42,6 +42,10 @@ export interface WhatsAppMessage {
   type: 'text' | 'image' | 'interactive' | 'audio' | 'document' | 'sticker' | 'unknown';
   text?: { body: string };
   interactive?: WhatsAppInteractiveReply;
+  /** Present when type === 'audio' — voice notes sent by WhatsApp users */
+  audio?: { id: string; mime_type?: string };
+  /** Present when type === 'image' */
+  image?: { id: string; mime_type?: string; caption?: string };
 }
 
 export interface WhatsAppInteractiveReply {
