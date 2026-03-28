@@ -51,6 +51,7 @@ import { logger, maskPhone, maskReference } from '../../utils/logger';
 import { messageQueue } from '../../queues/message.queue';
 import { digitalDeliveryQueue } from '../../queues/digitalDelivery.queue';
 import { normaliseMessage } from '../nlp-router.service';
+import { generateNotFoundResponse } from '../llm.service';
 import { getStoreStatus } from '../../utils/working-hours';
 import { offHoursContactRepository } from '../../repositories/offHoursContact.repository';
 
@@ -170,7 +171,9 @@ export async function processIncomingMessage(
     if (messageToProcess.startsWith('PRICE:')) {
       const productId = messageToProcess.slice(6);
       if (productId === 'NOT_FOUND') {
-        await enqueue(from, t('product_not_found', language));
+        const productNames = products.map((p) => p.name);
+        const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName);
+        await enqueue(from, reply);
       } else {
         const product = products.find((p) => p.id === productId);
         if (product) {

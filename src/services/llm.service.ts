@@ -99,3 +99,42 @@ Rules:
     return { intent: 'UNKNOWN', rawMessage: customerMessage };
   }
 }
+
+/**
+ * Generates a context-aware "we don't have that" response.
+ *
+ * Instead of a generic warehouse-sounding reply, Claude reads the actual
+ * menu and the customer's question, then responds warmly and specifically —
+ * e.g. noting it's a food shop when someone asks for perfumes.
+ *
+ * Falls back to a safe static string if the API call fails.
+ */
+export async function generateNotFoundResponse(
+  customerMessage: string,
+  productNames: string[],
+  vendorName: string,
+): Promise<string> {
+  const FALLBACK = "Sorry, we don't have that! Type *MENU* to see what we offer. 😊";
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 120,
+      system:
+        `You are a friendly Nigerian WhatsApp vendor assistant for ${vendorName}.\n` +
+        `The store sells: ${productNames.join(', ')}.\n` +
+        `A customer asked about something that is NOT on the menu.\n` +
+        `Reply naturally and warmly in 1–2 short sentences explaining you don't sell that.\n` +
+        `If it's clearly a different category (e.g. perfumes when you sell food), acknowledge it warmly.\n` +
+        `End by inviting them to see the menu.\n` +
+        `Never say "carry that item". Sound human and friendly, not like a system.`,
+      messages: [{ role: 'user', content: customerMessage }],
+    });
+    const block = response.content[0];
+    return block.type === 'text' ? block.text.trim() : FALLBACK;
+  } catch (err) {
+    logger.error('generateNotFoundResponse failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return FALLBACK;
+  }
+}
