@@ -69,7 +69,8 @@ export async function normaliseMessage(
         // The state machine handles quantities separately so we just return the index
         return { text: String(productIndex), intent };
       }
-      return { text: rawMessage, intent }; // fallback to raw message
+      // No product match — signal order.service.ts to handle gracefully
+      return { text: 'ORDER:NOT_FOUND', intent };
     }
 
     case 'PRICE_ENQUIRY': {

@@ -57,6 +57,18 @@ Rules:
 - Examples: "Is chicken available?" → {"intent": "PRICE_ENQUIRY", "productHint": "chicken"}
 - Examples: "Do you sell eba?" → {"intent": "PRICE_ENQUIRY", "productHint": "eba"}
 - Examples: "Any dodo today?" → {"intent": "PRICE_ENQUIRY", "productHint": "dodo"}
+- MENU intent — any request to browse, see, or show available items:
+  "Let me see your menu" → {"intent": "MENU"}
+  "Show me the menu" → {"intent": "MENU"}
+  "Show me what you have" → {"intent": "MENU"}
+  "What do you sell?" → {"intent": "MENU"}
+  "What's available?" → {"intent": "MENU"}
+  "I want to see the menu" → {"intent": "MENU"}
+  "Wetin you get?" → {"intent": "MENU"}
+  "Show me food" → {"intent": "MENU"}
+  "What can I order?" → {"intent": "MENU"}
+  "See menu" → {"intent": "MENU"}
+  "Menu" → {"intent": "MENU"}
 - Always return valid JSON`;
 
     const response = await client.messages.create({

@@ -163,14 +163,23 @@ export async function processIncomingMessage(
       ConversationState.LANGUAGE_SELECTION,
       ConversationState.AWAITING_ADDRESS,
     ];
-    const { text: messageToProcess } = skipNlpStates.includes(currentState)
-      ? { text: rawMessage }
-      : await normaliseMessage(rawMessage, products, currentState);
+    let messageToProcess = rawMessage;
+    let nlpIntent: string | null = null;
+    if (!skipNlpStates.includes(currentState)) {
+      const nlpResult = await normaliseMessage(rawMessage, products, currentState);
+      messageToProcess = nlpResult.text;
+      nlpIntent = nlpResult.intent.intent;
+    }
 
     // ── Bug 1: PRICE intercept — handle before state machine, works in any state ─
     if (messageToProcess.startsWith('PRICE:')) {
       const productId = messageToProcess.slice(6);
       if (productId === 'NOT_FOUND') {
+        // Clear any stale pending product so a subsequent order doesn't auto-select
+        await sessionRepository.upsert(from, vendor.id, currentState, {
+          ...currentData,
+          nlpPendingProductId: undefined,
+        });
         const productNames = products.map((p) => p.name);
         const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName);
         await enqueue(from, reply);
@@ -186,6 +195,39 @@ export async function processIncomingMessage(
           );
         }
       }
+      return;
+    }
+
+    // ── Bug 2: ORDER:NOT_FOUND — clear stale selections, reply, stop early ───────
+    if (messageToProcess === 'ORDER:NOT_FOUND') {
+      // Clear all stale product state so a later order doesn't auto-select
+      await sessionRepository.upsert(from, vendor.id, currentState, {
+        ...currentData,
+        nlpPendingProductId: undefined,
+        pendingProductId: undefined,
+        pendingProductName: undefined,
+        pendingProductPrice: undefined,
+      });
+      const productNames = products.map((p) => p.name);
+      const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName);
+      await enqueue(from, reply);
+      // Handled by intent router — do not continue to state machine
+      return;
+    }
+
+    // ── Global intent override: MENU/GREETING/CANCEL escape any stuck state ─────
+    // This prevents "Please enter a quantity" when the customer navigates away mid-flow.
+    if (nlpIntent === 'MENU' || nlpIntent === 'GREETING') {
+      // Run from IDLE so handleIdle shows the full catalog; preserve cart data
+      const result = await runStateMachine('MENU', ConversationState.IDLE, currentData, vendor, products, language);
+      await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
+      for (const msg of result.messages) await enqueue(from, msg);
+      return;
+    }
+    if (nlpIntent === 'CANCEL') {
+      const result = await runStateMachine('CANCEL', currentState, currentData, vendor, products, language);
+      await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
+      for (const msg of result.messages) await enqueue(from, msg);
       return;
     }
 

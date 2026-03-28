@@ -36,7 +36,8 @@ export async function deliverDigitalProduct(job: DigitalDeliveryJob): Promise<vo
   });
 
   // Send the delivery message — this is what the customer has been waiting for
-  const message = msgDigitalDelivery(productName, deliveryContent, deliveryMessage, orderId);
+  const lang = (job.language as import('../../i18n').Language | undefined) ?? 'en';
+  const message = msgDigitalDelivery(productName, deliveryContent, deliveryMessage, orderId, lang);
   await sendTextMessage(customerPhone, message);
 
   // Update order status in DB
