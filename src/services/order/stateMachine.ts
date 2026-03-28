@@ -16,10 +16,13 @@
  * the flow type of the first product selected.
  *
  * All handlers are pure functions (no side effects) to keep them testable.
+ * Every handler accepts a `language` parameter and uses t() for all messages.
  */
 import { Product, Vendor } from '@prisma/client';
 import { ConversationState, SessionData, CartItem, ProductType, OrderType } from '../../types';
 import { MAX_CART_ITEMS } from '../../config/constants';
+import { t, Language } from '../../i18n';
+import { formatNaira } from '../../utils/formatters';
 import {
   msgPhysicalWelcome,
   msgDigitalWelcome,
@@ -74,13 +77,14 @@ export function handleIdle(
   vendor: Vendor,
   products: Product[],
   _currentData: SessionData,
+  lang: Language = 'en',
 ): TransitionResult {
   const isHybrid = vendor.vendorType === 'HYBRID';
   const allDigital = products.every((p) => p.productType === 'DIGITAL');
 
   const welcomeMsg = allDigital
-    ? msgDigitalWelcome(vendor.businessName, products)
-    : msgPhysicalWelcome(vendor.businessName, products, isHybrid);
+    ? msgDigitalWelcome(vendor.businessName, products, lang)
+    : msgPhysicalWelcome(vendor.businessName, products, isHybrid, lang);
 
   return {
     messages: [welcomeMsg],
@@ -91,30 +95,44 @@ export function handleIdle(
 
 // ─── BROWSING ─────────────────────────────────────────────────────────────────
 
-/**
- * Customer is viewing the catalog and should reply with an item number.
- * For HYBRID vendors, the selected product type determines which flow to enter.
- */
 export function handleBrowsing(
   message: string,
   vendor: Vendor,
   products: Product[],
   currentData: SessionData,
+  lang: Language = 'en',
 ): TransitionResult {
   const n = norm(message);
 
+  // ── PRICE:<productId> — injected by NLP router for price enquiries ─────────
+  if (message.startsWith('PRICE:')) {
+    const productId = message.slice(6);
+    const product = products.find((p) => p.id === productId);
+    if (product) {
+      return {
+        messages: [t('price_info', lang, { name: product.name, price: formatNaira(product.price) })],
+        nextState: ConversationState.BROWSING,
+        nextData: currentData,
+      };
+    }
+  }
+
   if (isCancelKeyword(n)) {
-    return { messages: ['Order cancelled. Type MENU to start again! 👋'], nextState: ConversationState.IDLE, nextData: { cart: [] } };
+    return {
+      messages: [t('cancel_confirm', lang)],
+      nextState: ConversationState.IDLE,
+      nextData: { cart: [] },
+    };
   }
 
   if (isMenuKeyword(message)) {
-    return handleIdle(message, vendor, products, currentData);
+    return handleIdle(message, vendor, products, currentData, lang);
   }
 
   const index = parseIndex(message, products.length);
   if (index === null) {
     return {
-      messages: [`Please reply with the *number* of the item you'd like (1–${products.length}), or type *MENU* to see the list again.`],
+      messages: [t('browsing_invalid', lang, { max: String(products.length) })],
       nextState: ConversationState.BROWSING,
       nextData: currentData,
     };
@@ -122,13 +140,17 @@ export function handleBrowsing(
 
   const selected = products[index - 1];
   if (!selected) {
-    return { messages: [`That item doesn't exist. Reply with a number between 1 and ${products.length}.`], nextState: ConversationState.BROWSING, nextData: currentData };
+    return {
+      messages: [t('browsing_invalid_item', lang, { max: String(products.length) })],
+      nextState: ConversationState.BROWSING,
+      nextData: currentData,
+    };
   }
 
   // ── Digital product selected → enter Flow B ──────────────────────────────
   if (selected.productType === 'DIGITAL') {
     return {
-      messages: [msgDigitalProductDetail(selected)],
+      messages: [msgDigitalProductDetail(selected, lang)],
       nextState: ConversationState.ORDERING,
       nextData: {
         cart: [],
@@ -140,7 +162,7 @@ export function handleBrowsing(
 
   // ── Physical product selected → enter Flow A ──────────────────────────────
   return {
-    messages: [msgAskQuantity(selected.name, selected.price)],
+    messages: [msgAskQuantity(selected.name, selected.price, lang)],
     nextState: ConversationState.ORDERING,
     nextData: {
       cart: currentData.cart,
@@ -159,24 +181,37 @@ export function handlePhysicalOrdering(
   _vendor: Vendor,
   products: Product[],
   currentData: SessionData,
+  lang: Language = 'en',
 ): TransitionResult {
   const n = norm(message);
 
   if (isCancelKeyword(n)) {
-    return { messages: ['Order cancelled. Type MENU to browse again! 👋'], nextState: ConversationState.IDLE, nextData: { cart: [] } };
+    return {
+      messages: [t('cancel_confirm_ordering', lang)],
+      nextState: ConversationState.IDLE,
+      nextData: { cart: [] },
+    };
   }
 
   if (n === 'CLEAR') {
-    return { messages: ['Cart cleared! Reply with a number to start adding items again.'], nextState: ConversationState.BROWSING, nextData: { cart: [], activeOrderType: OrderType.PHYSICAL } };
+    return {
+      messages: [t('cart_cleared', lang)],
+      nextState: ConversationState.BROWSING,
+      nextData: { cart: [], activeOrderType: OrderType.PHYSICAL },
+    };
   }
 
   // "DONE" → proceed to address collection
   if (n === 'DONE' || n === 'CHECKOUT') {
     if (!currentData.cart.length) {
-      return { messages: ['Your cart is empty! Select at least one item first.'], nextState: ConversationState.BROWSING, nextData: currentData };
+      return {
+        messages: [t('cart_empty_checkout', lang)],
+        nextState: ConversationState.BROWSING,
+        nextData: currentData,
+      };
     }
     return {
-      messages: [msgAskDeliveryAddress(currentData.cart)],
+      messages: [msgAskDeliveryAddress(currentData.cart, lang)],
       nextState: ConversationState.AWAITING_ADDRESS,
       nextData: currentData,
     };
@@ -186,12 +221,20 @@ export function handlePhysicalOrdering(
   if (currentData.pendingProductId) {
     const qty = parseQuantity(message);
     if (!qty) {
-      return { messages: [`Please enter a valid quantity (e.g. *1*, *2*, *3*).`], nextState: ConversationState.ORDERING, nextData: currentData };
+      return {
+        messages: [t('invalid_quantity', lang)],
+        nextState: ConversationState.ORDERING,
+        nextData: currentData,
+      };
     }
 
     const totalQty = currentData.cart.reduce((s, i) => s + i.quantity, 0) + qty;
     if (totalQty > MAX_CART_ITEMS) {
-      return { messages: [`Sorry, max ${MAX_CART_ITEMS} items per order. Type *DONE* to checkout.`], nextState: ConversationState.ORDERING, nextData: currentData };
+      return {
+        messages: [t('max_cart_exceeded', lang, { max: String(MAX_CART_ITEMS) })],
+        nextState: ConversationState.ORDERING,
+        nextData: currentData,
+      };
     }
 
     const newCart = addToCart(currentData.cart, {
@@ -211,34 +254,38 @@ export function handlePhysicalOrdering(
     };
 
     return {
-      messages: [msgItemAdded(currentData.pendingProductName ?? 'Item', qty, newCart)],
+      messages: [msgItemAdded(currentData.pendingProductName ?? 'Item', qty, newCart, lang)],
       nextState: ConversationState.ORDERING,
       nextData: updatedData,
     };
   }
 
   // No pending item — customer may be selecting another item by number
-  // (Only allow physical products — can't mix with digital in one order)
   const physicalProducts = products.filter((p) => p.productType === 'PHYSICAL');
   const index = parseIndex(message, physicalProducts.length);
   if (index !== null) {
     const sel = physicalProducts[index - 1];
     if (sel) {
       return {
-        messages: [msgAskQuantity(sel.name, sel.price)],
+        messages: [msgAskQuantity(sel.name, sel.price, lang)],
         nextState: ConversationState.ORDERING,
-        nextData: { ...currentData, pendingProductId: sel.id, pendingProductName: sel.name, pendingProductPrice: sel.price },
+        nextData: {
+          ...currentData,
+          pendingProductId: sel.id,
+          pendingProductName: sel.name,
+          pendingProductPrice: sel.price,
+        },
       };
     }
   }
 
   // Fallback
+  const msg = currentData.cart.length
+    ? t('cart_status_items', lang, { count: String(currentData.cart.length) })
+    : t('cart_status_empty', lang);
+
   return {
-    messages: [
-      currentData.cart.length
-        ? `You have ${currentData.cart.length} item(s) in your cart.\n\nReply with a number to add more, *DONE* to checkout, or *CLEAR* to start over.`
-        : `Reply with a number to add an item, or type *MENU* to see the catalog.`,
-    ],
+    messages: [msg],
     nextState: ConversationState.ORDERING,
     nextData: currentData,
   };
@@ -246,31 +293,28 @@ export function handlePhysicalOrdering(
 
 // ─── ORDERING (Flow B — Digital) ─────────────────────────────────────────────
 
-/**
- * Customer has seen the product detail card and we're waiting for BUY or MENU.
- */
 export function handleDigitalOrdering(
   message: string,
   vendor: Vendor,
   products: Product[],
   currentData: SessionData,
+  lang: Language = 'en',
 ): TransitionResult {
   const n = norm(message);
 
   if (isCancelKeyword(n) || n === 'MENU') {
-    return handleIdle(message, vendor, products, { cart: [] });
+    return handleIdle(message, vendor, products, { cart: [] }, lang);
   }
 
   if (n === 'BUY' || n === 'YES' || n === 'CONFIRM') {
     if (!currentData.selectedProductId) {
-      return handleIdle(message, vendor, products, { cart: [] });
+      return handleIdle(message, vendor, products, { cart: [] }, lang);
     }
     const product = products.find((p) => p.id === currentData.selectedProductId);
     if (!product) {
-      return handleIdle(message, vendor, products, { cart: [] });
+      return handleIdle(message, vendor, products, { cart: [] }, lang);
     }
 
-    // Build a single-item cart for the digital product
     const cart: CartItem[] = [{
       productId: product.id,
       name: product.name,
@@ -287,9 +331,8 @@ export function handleDigitalOrdering(
     };
   }
 
-  // Unknown response while viewing product
   return {
-    messages: [`Reply *BUY* to purchase, *MENU* to go back to the catalog, or *CANCEL* to exit.`],
+    messages: [t('digital_buy_prompt', lang)],
     nextState: ConversationState.ORDERING,
     nextData: currentData,
   };
@@ -302,23 +345,27 @@ export function handleAwaitingAddress(
   _vendor: Vendor,
   _products: Product[],
   currentData: SessionData,
+  lang: Language = 'en',
 ): TransitionResult {
   const n = norm(message);
 
   if (isCancelKeyword(n)) {
-    return { messages: ['Order cancelled. Type MENU to start again.'], nextState: ConversationState.IDLE, nextData: { cart: [] } };
+    return {
+      messages: [t('cancel_address', lang)],
+      nextState: ConversationState.IDLE,
+      nextData: { cart: [] },
+    };
   }
 
   const dataWithAddr = currentData as SessionData & { deliveryAddress?: string };
 
-  // If we already have an address, we're in confirmation mode
   if (dataWithAddr.deliveryAddress) {
-    return handleAddressConfirmation(message, currentData);
+    return handleAddressConfirmation(message, currentData, lang);
   }
 
   if (message.trim().length < 10) {
     return {
-      messages: ['Please send your *full delivery address*.\n\nExample: "12 Adeola Odeku Street, Victoria Island, Lagos"'],
+      messages: [t('address_too_short', lang)],
       nextState: ConversationState.AWAITING_ADDRESS,
       nextData: currentData,
     };
@@ -326,13 +373,17 @@ export function handleAwaitingAddress(
 
   const address = message.trim();
   return {
-    messages: [msgConfirmAddress(address, currentData.cart)],
+    messages: [msgConfirmAddress(address, currentData.cart, lang)],
     nextState: ConversationState.AWAITING_ADDRESS,
     nextData: { ...currentData, deliveryAddress: address },
   };
 }
 
-function handleAddressConfirmation(message: string, currentData: SessionData): TransitionResult {
+function handleAddressConfirmation(
+  message: string,
+  currentData: SessionData,
+  lang: Language = 'en',
+): TransitionResult {
   const n = norm(message);
 
   if (['YES', 'Y', 'CONFIRM', 'OK', 'OKAY'].includes(n)) {
@@ -346,14 +397,14 @@ function handleAddressConfirmation(message: string, currentData: SessionData): T
 
   if (['NO', 'N', 'CHANGE'].includes(n)) {
     return {
-      messages: ['No problem! Please send your correct delivery address:'],
+      messages: [t('address_change_prompt', lang)],
       nextState: ConversationState.AWAITING_ADDRESS,
       nextData: { ...currentData, deliveryAddress: undefined },
     };
   }
 
   return {
-    messages: ['Reply *YES* to confirm your order, or *NO* to change your address.'],
+    messages: [t('address_confirm_prompt', lang)],
     nextState: ConversationState.AWAITING_ADDRESS,
     nextData: currentData,
   };
@@ -364,20 +415,20 @@ function handleAddressConfirmation(message: string, currentData: SessionData): T
 export function handleAwaitingPayment(
   message: string,
   currentData: SessionData,
+  lang: Language = 'en',
 ): TransitionResult {
   const n = norm(message);
 
   if (isCancelKeyword(n)) {
-    return { messages: ['Order cancelled. Type MENU to start a new order.'], nextState: ConversationState.IDLE, nextData: { cart: [] } };
+    return {
+      messages: [t('cancel_awaiting_payment', lang)],
+      nextState: ConversationState.IDLE,
+      nextData: { cart: [] },
+    };
   }
 
   return {
-    messages: [
-      `We're waiting for your payment confirmation. 💳\n\n` +
-      `Once received, your order will be processed immediately!\n\n` +
-      `If you haven't paid yet, please use the payment link we sent.\n` +
-      `Type *CANCEL* to start over.`,
-    ],
+    messages: [t('awaiting_payment', lang)],
     nextState: ConversationState.AWAITING_PAYMENT,
     nextData: currentData,
   };
@@ -390,9 +441,9 @@ export function handleCompleted(
   vendor: Vendor,
   products: Product[],
   _currentData: SessionData,
+  lang: Language = 'en',
 ): TransitionResult {
-  // Treat any message after completion as starting a fresh session
-  return handleIdle(_message, vendor, products, { cart: [] });
+  return handleIdle(_message, vendor, products, { cart: [] }, lang);
 }
 
 // ─── Cart Helper ──────────────────────────────────────────────────────────────

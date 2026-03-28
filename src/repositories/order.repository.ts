@@ -125,6 +125,53 @@ export const orderRepository = {
 
     return { orders, total };
   },
+
+  /** Marks an order as physically delivered and records the delivery timestamp */
+  async markDelivered(orderId: string): Promise<Order> {
+    return prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'DELIVERED', deliveredAt: new Date() },
+    });
+  },
+
+  /** Finds delivered orders eligible for a re-order nudge (not yet nudged, customer not opted out) */
+  async findEligibleForReorder(from: Date, to: Date): Promise<OrderWithDetails[]> {
+    return prisma.order.findMany({
+      where: {
+        status: 'DELIVERED',
+        deliveredAt: { gte: from, lte: to },
+        reorderSentAt: null,
+        customer: { reorderOptOut: false },
+      },
+      include: {
+        customer: true,
+        orderItems: { include: { product: true } },
+      },
+    });
+  },
+
+  /** Finds the most recent delivered order for a customer/vendor pair nudged within the last 24 h */
+  async findRecentReorderNudge(customerId: string, vendorId: string): Promise<OrderWithDetails | null> {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    return prisma.order.findFirst({
+      where: {
+        customerId,
+        vendorId,
+        status: 'DELIVERED',
+        reorderSentAt: { gte: cutoff },
+      },
+      include: {
+        customer: true,
+        orderItems: { include: { product: true } },
+      },
+      orderBy: { reorderSentAt: 'desc' },
+    });
+  },
+
+  /** Stamps the re-order nudge timestamp to prevent duplicate sends */
+  async markReorderSent(orderId: string): Promise<void> {
+    await prisma.order.update({ where: { id: orderId }, data: { reorderSentAt: new Date() } });
+  },
 };
 
 export type { Order };

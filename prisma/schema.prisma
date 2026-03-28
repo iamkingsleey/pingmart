@@ -86,6 +86,12 @@ model Customer {
   id             String   @id @default(uuid())
   whatsappNumber String   @unique
   name           String?
+  // ISO language code chosen by the customer during first interaction
+  language       String   @default("en")
+  // true once the customer has explicitly chosen a language (false = using default 'en')
+  languageSet    Boolean  @default(false)
+  // true if customer opted out of re-order reminder messages
+  reorderOptOut  Boolean  @default(false)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -116,6 +122,10 @@ model Order {
   paymentProcessed  Boolean     @default(false)
   // For digital orders: track whether automatic delivery succeeded
   digitalDelivered  Boolean     @default(false)
+  // Timestamp when order was physically delivered — used to schedule re-order nudges
+  deliveredAt       DateTime?
+  // Timestamp when a re-order nudge was sent — prevents duplicate nudges
+  reorderSentAt     DateTime?
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
@@ -208,10 +218,11 @@ enum OrderStatus {
 }
 
 enum ConversationState {
-  IDLE             // No active conversation
-  BROWSING         // Viewing catalog
-  ORDERING         // Adding items to cart (physical) or viewing product detail (digital)
-  AWAITING_ADDRESS // Waiting for delivery address (physical only)
-  AWAITING_PAYMENT // Payment link sent, waiting for Paystack webhook
-  COMPLETED        // Order placed and confirmed — ready for fresh start
+  LANGUAGE_SELECTION // Brand-new customer choosing their preferred language
+  IDLE               // No active conversation
+  BROWSING           // Viewing catalog
+  ORDERING           // Adding items to cart (physical) or viewing product detail (digital)
+  AWAITING_ADDRESS   // Waiting for delivery address (physical only)
+  AWAITING_PAYMENT   // Payment link sent, waiting for Paystack webhook
+  COMPLETED          // Order placed and confirmed — ready for fresh start
 }

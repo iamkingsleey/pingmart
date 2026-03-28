@@ -94,7 +94,12 @@ export async function handleVendorStatusCommand(
     return;
   }
 
-  await orderRepository.updateStatus(order.id, newStatus);
+  // Use markDelivered for DELIVERED to also stamp the deliveredAt timestamp
+  if (newStatus === OrderStatus.DELIVERED) {
+    await orderRepository.markDelivered(order.id);
+  } else {
+    await orderRepository.updateStatus(order.id, newStatus);
+  }
 
   logger.info('Order status updated by vendor', {
     orderId: order.id,

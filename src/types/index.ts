@@ -44,6 +44,7 @@ export enum OrderStatus {
 // ─── Conversation State Machine ───────────────────────────────────────────────
 
 export enum ConversationState {
+  LANGUAGE_SELECTION = 'LANGUAGE_SELECTION',
   IDLE = 'IDLE',
   BROWSING = 'BROWSING',
   ORDERING = 'ORDERING',
@@ -86,6 +87,10 @@ export interface SessionData {
   // ── Digital flow state ────────────────────────────────────────────────────
   /** Digital product the customer is viewing/buying */
   selectedProductId?: string;
+
+  // ── NLU state ─────────────────────────────────────────────────────────────
+  /** Product shown during an availability check — waiting for customer YES/NO */
+  nlpPendingProductId?: string;
 }
 
 // ─── API Contracts ────────────────────────────────────────────────────────────
@@ -191,4 +196,6 @@ export interface DigitalDeliveryJob {
   productName: string;
   deliveryContent: string;
   deliveryMessage: string;
+  /** Customer's chosen language — defaults to 'en' if absent */
+  language?: string;
 }

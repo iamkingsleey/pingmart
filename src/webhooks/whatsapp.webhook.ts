@@ -11,6 +11,8 @@ import { messageQueue } from '../queues/message.queue';
 import { WhatsAppWebhookPayload, WhatsAppMessage } from '../types/whatsapp';
 import { msgFallback } from '../services/whatsapp/templates';
 import { normalisePhone } from '../utils/formatters';
+import { customerRepository } from '../repositories/customer.repository';
+import { Language } from '../i18n';
 
 export function handleWhatsAppVerification(req: Request, res: Response): void {
   const mode = req.query['hub.mode'];
@@ -72,8 +74,10 @@ async function routeIncomingMessage(
     const reply = message.interactive?.button_reply ?? message.interactive?.list_reply;
     if (reply) textContent = reply.title;
   } else {
-    // Unsupported message type — send fallback
-    await messageQueue.add({ to: from, message: msgFallback() });
+    // Unsupported message type — send fallback in customer's chosen language
+    const customer = await customerRepository.findByWhatsAppNumber(from);
+    const lang = (customer?.language as Language | undefined) ?? 'en';
+    await messageQueue.add({ to: from, message: msgFallback(lang) });
     return;
   }
 

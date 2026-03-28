@@ -38,6 +38,13 @@ const envSchema = z.object({
   // Encryption — AES-256-GCM key for bank account numbers at rest
   // Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
   ENCRYPTION_KEY: z.string().length(64, 'ENCRYPTION_KEY must be a 64-character hex string (32 bytes)'),
+
+  // Anthropic — Natural Language Understanding
+  ANTHROPIC_API_KEY: z.string().min(1),
+  ANTHROPIC_MODEL: z.string().default('claude-haiku-4-5'),
+
+  // Re-order Engine
+  REORDER_DAYS_AFTER: z.string().default('7'),
 });
 
 const parsed = envSchema.safeParse(process.env);

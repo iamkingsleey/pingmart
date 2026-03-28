@@ -4,6 +4,11 @@
  * Processes incoming customer messages through the state machine,
  * creates orders, triggers payments, and routes post-payment fulfillment
  * to the correct delivery path (physical or digital).
+ *
+ * Language flow:
+ *   1. Brand-new customer (isNew=true) → LANGUAGE_SELECTION state
+ *   2. Customer replies 1–5 → language saved to DB, catalog shown in chosen language
+ *   3. All subsequent messages use customer.language from DB
  */
 import { Vendor } from '@prisma/client';
 import { sessionRepository } from '../../repositories/session.repository';
@@ -18,6 +23,9 @@ import {
   msgPhysicalOrderConfirmedCustomer,
   msgNewPhysicalOrder,
   msgError,
+  msgPhysicalWelcome,
+  msgDigitalWelcome,
+  msgAskQuantity,
 } from '../whatsapp/templates';
 import {
   handleIdle,
@@ -34,12 +42,22 @@ import {
   SessionData,
   OrderType,
   ProductType,
+  CartItem,
 } from '../../types';
-import { calculateCartTotal } from '../../utils/formatters';
+import { t, Language, LANGUAGE_CODES } from '../../i18n';
+import { calculateCartTotal, formatNaira, formatCartSummary } from '../../utils/formatters';
 import { generatePaystackReference } from '../../utils/crypto';
 import { logger, maskPhone, maskReference } from '../../utils/logger';
 import { messageQueue } from '../../queues/message.queue';
 import { digitalDeliveryQueue } from '../../queues/digitalDelivery.queue';
+import { normaliseMessage } from '../nlp-router.service';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function isLanguageChangeKeyword(text: string): boolean {
+  const n = text.trim().toUpperCase().replace(/\s+/g, ' ');
+  return n === 'LANGUAGE' || n === 'CHANGE LANGUAGE';
+}
 
 // ─── Incoming Message Processor ───────────────────────────────────────────────
 
@@ -54,11 +72,12 @@ export async function processIncomingMessage(
     const vendor = await vendorRepository.findByWhatsAppNumber(vendorWhatsAppNumber);
     if (!vendor?.isActive) { logger.warn('Message for unknown/inactive vendor', ctx); return; }
 
-    const customer = await customerRepository.findOrCreate(from);
+    const { customer } = await customerRepository.findOrCreate(from);
     const products = await productRepository.findAvailableByVendor(vendor.id);
+    const language = (customer.language as Language) ?? 'en';
 
     if (!products.length) {
-      await enqueue(from, `Sorry, ${vendor.businessName} has no items available right now. Please check back later.`);
+      await enqueue(from, t('no_items_available', language, { vendorName: vendor.businessName }));
       return;
     }
 
@@ -66,21 +85,131 @@ export async function processIncomingMessage(
     const currentState = (session?.state ?? ConversationState.IDLE) as ConversationState;
     const currentData = (session?.sessionData ?? { cart: [] }) as unknown as SessionData;
 
-    logger.info('Processing message', { ...ctx, state: currentState, msgLen: rawMessage.length });
+    // ── Customer hasn't chosen a language yet → show language selection ───
+    if (!customer.languageSet && !session) {
+      const prompt = t('lang_select_prompt', 'en', { vendorName: vendor.businessName });
+      await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { cart: [] });
+      await enqueue(from, prompt);
+      return;
+    }
 
-    const result = await runStateMachine(rawMessage, currentState, currentData, vendor, products);
+    // ── "LANGUAGE" / "CHANGE LANGUAGE" at any time → re-open language menu ─
+    if (isLanguageChangeKeyword(rawMessage)) {
+      const prompt = t('lang_select_prompt', 'en', { vendorName: vendor.businessName });
+      await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { cart: [] });
+      await enqueue(from, prompt);
+      logger.info('Language change requested', { from: maskPhone(from) });
+      return;
+    }
+
+    // ── Language selection in progress ────────────────────────────────────
+    if (currentState === ConversationState.LANGUAGE_SELECTION) {
+      await processLanguageSelection(from, rawMessage, vendor, products);
+      return;
+    }
+
+    logger.info('Processing message', { ...ctx, state: currentState, lang: language, msgLen: rawMessage.length });
+
+    // ── Reorder reply handler — check before NLU/state machine ───────────────
+    const reorderHandled = await handleReorderReply(from, rawMessage, vendor.id, customer.id, products);
+    if (reorderHandled) return;
+
+    // ── Bug 3: YES after availability check → add the pending NLU product ─────
+    if (rawMessage.trim().toUpperCase() === 'YES' && currentData.nlpPendingProductId) {
+      const pendingProduct = products.find((p) => p.id === currentData.nlpPendingProductId);
+      if (pendingProduct) {
+        const newData: SessionData = {
+          ...currentData,
+          nlpPendingProductId: undefined,
+          pendingProductId: pendingProduct.id,
+          pendingProductName: pendingProduct.name,
+          pendingProductPrice: pendingProduct.price,
+          activeOrderType: OrderType.PHYSICAL,
+        };
+        await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, newData);
+        await enqueue(from, msgAskQuantity(pendingProduct.name, pendingProduct.price, language));
+        return;
+      }
+    }
+
+    // ── NLU normalisation — skip only LANGUAGE_SELECTION and AWAITING_ADDRESS ─
+    // (AWAITING_ADDRESS is free text; address like "22 Jollof St" could be misclassified)
+    const skipNlpStates: ConversationState[] = [
+      ConversationState.LANGUAGE_SELECTION,
+      ConversationState.AWAITING_ADDRESS,
+    ];
+    const { text: messageToProcess } = skipNlpStates.includes(currentState)
+      ? { text: rawMessage }
+      : await normaliseMessage(rawMessage, products, currentState);
+
+    // ── Bug 1: PRICE intercept — handle before state machine, works in any state ─
+    if (messageToProcess.startsWith('PRICE:')) {
+      const productId = messageToProcess.slice(6);
+      if (productId === 'NOT_FOUND') {
+        await enqueue(from, t('product_not_found', language));
+      } else {
+        const product = products.find((p) => p.id === productId);
+        if (product) {
+          const newData: SessionData = { ...currentData, nlpPendingProductId: product.id };
+          await sessionRepository.upsert(from, vendor.id, currentState, newData);
+          await enqueue(
+            from,
+            `✅ Yes, we have *${product.name}* — ${formatNaira(product.price)}!\n\n` +
+            `Would you like to add it to your cart? Reply *YES* to add it or type *MENU* to see everything.`,
+          );
+        }
+      }
+      return;
+    }
+
+    const result = await runStateMachine(messageToProcess, currentState, currentData, vendor, products, language);
 
     await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
 
     for (const msg of result.messages) await enqueue(from, msg);
 
     if (result.shouldCreateOrder) {
-      await createOrderAndInitiatePayment(customer.id, vendor, result.nextData, from);
+      await createOrderAndInitiatePayment(customer.id, vendor, result.nextData, from, language);
     }
   } catch (err) {
     logger.error('Error processing message', { ...ctx, error: (err as Error).message });
     await enqueue(from, msgError());
   }
+}
+
+// ─── Language Selection Handler ───────────────────────────────────────────────
+
+async function processLanguageSelection(
+  from: string,
+  message: string,
+  vendor: Vendor,
+  products: import('@prisma/client').Product[],
+): Promise<void> {
+  const choice = message.trim();
+  const language = LANGUAGE_CODES[choice];
+
+  if (!language) {
+    // Keep state as LANGUAGE_SELECTION, re-prompt in English
+    await enqueue(from, t('invalid_lang_choice', 'en'));
+    return;
+  }
+
+  // Save the customer's language preference
+  await customerRepository.updateLanguage(from, language);
+  logger.info('Language selected', { from: maskPhone(from), language });
+
+  // Confirm in their chosen language
+  await enqueue(from, t('lang_selected', language));
+
+  // Show the catalog immediately
+  const isHybrid = vendor.vendorType === 'HYBRID';
+  const allDigital = products.every((p) => p.productType === 'DIGITAL');
+  const welcomeMsg = allDigital
+    ? msgDigitalWelcome(vendor.businessName, products, language)
+    : msgPhysicalWelcome(vendor.businessName, products, isHybrid, language);
+
+  await sessionRepository.upsert(from, vendor.id, ConversationState.BROWSING, { cart: [] });
+  await enqueue(from, welcomeMsg);
 }
 
 // ─── State Machine Router ─────────────────────────────────────────────────────
@@ -91,33 +220,33 @@ async function runStateMachine(
   data: SessionData,
   vendor: Vendor,
   products: import('@prisma/client').Product[],
+  language: Language,
 ): Promise<TransitionResult> {
   switch (state) {
     case ConversationState.IDLE:
-      return handleIdle(message, vendor, products, data);
+      return handleIdle(message, vendor, products, data, language);
 
     case ConversationState.BROWSING:
-      return handleBrowsing(message, vendor, products, data);
+      return handleBrowsing(message, vendor, products, data, language);
 
     case ConversationState.ORDERING:
-      // Route to the correct flow based on what's in the session
       if (data.activeOrderType === OrderType.DIGITAL || data.selectedProductId) {
-        return handleDigitalOrdering(message, vendor, products, data);
+        return handleDigitalOrdering(message, vendor, products, data, language);
       }
-      return handlePhysicalOrdering(message, vendor, products, data);
+      return handlePhysicalOrdering(message, vendor, products, data, language);
 
     case ConversationState.AWAITING_ADDRESS:
-      return handleAwaitingAddress(message, vendor, products, data);
+      return handleAwaitingAddress(message, vendor, products, data, language);
 
     case ConversationState.AWAITING_PAYMENT:
-      return handleAwaitingPayment(message, data);
+      return handleAwaitingPayment(message, data, language);
 
     case ConversationState.COMPLETED:
-      return handleCompleted(message, vendor, products, data);
+      return handleCompleted(message, vendor, products, data, language);
 
     default:
       logger.warn('Unknown session state — resetting to IDLE', { state });
-      return handleIdle(message, vendor, products, data);
+      return handleIdle(message, vendor, products, data, language);
   }
 }
 
@@ -128,6 +257,7 @@ async function createOrderAndInitiatePayment(
   vendor: Vendor,
   sessionData: SessionData,
   customerPhone: string,
+  language: Language,
 ): Promise<void> {
   const ctx = { customer: maskPhone(customerPhone) };
   const { cart, deliveryAddress, activeOrderType } = sessionData as SessionData & { deliveryAddress?: string };
@@ -150,7 +280,6 @@ async function createOrderAndInitiatePayment(
 
   logger.info('Order created', { orderId: order.id, orderType, reference: maskReference(reference) });
 
-  // Generate Paystack payment link
   const placeholderEmail = `${customerPhone.replace('+', '')}@orb.placeholder.com`;
   const paymentUrl = await initializeTransaction(placeholderEmail, totalAmount, reference, {
     orderId: order.id,
@@ -158,12 +287,11 @@ async function createOrderAndInitiatePayment(
     vendorId: vendor.id,
   });
 
-  // Send the appropriate payment message based on order type
   if (orderType === OrderType.DIGITAL) {
     const productName = cart[0]?.name ?? 'Product';
-    await enqueue(customerPhone, msgDigitalPaymentLink(paymentUrl, productName, totalAmount, order.id));
+    await enqueue(customerPhone, msgDigitalPaymentLink(paymentUrl, productName, totalAmount, order.id, language));
   } else {
-    await enqueue(customerPhone, msgPhysicalPaymentLink(paymentUrl, totalAmount, order.id));
+    await enqueue(customerPhone, msgPhysicalPaymentLink(paymentUrl, totalAmount, order.id, language));
   }
 
   logger.info('Payment link sent', { orderId: order.id, reference: maskReference(reference) });
@@ -171,15 +299,6 @@ async function createOrderAndInitiatePayment(
 
 // ─── Payment Confirmed Handler ────────────────────────────────────────────────
 
-/**
- * Called by the payment queue worker after the webhook handler has already:
- *  1. Verified the Paystack signature
- *  2. Found the order in the database
- *  3. Atomically flipped paymentProcessed false→true (idempotency guard)
- *
- * This function performs the fulfillment — it does NOT re-check idempotency
- * because the webhook handler already did that before enqueueing the job.
- */
 export async function handlePaymentConfirmed(paystackReference: string): Promise<void> {
   const ctx = { reference: maskReference(paystackReference) };
 
@@ -196,13 +315,16 @@ export async function handlePaymentConfirmed(paystackReference: string): Promise
 
   const customerPhone = orderDetail.customer.whatsappNumber;
 
+  // Retrieve customer's language preference for post-payment messages
+  const customerRecord = await customerRepository.findByWhatsAppNumber(customerPhone);
+  const language = (customerRecord?.language as Language) ?? 'en';
+
   if (order.orderType === 'DIGITAL') {
-    await handleDigitalPaymentConfirmed(orderDetail, vendor.whatsappNumber, customerPhone);
+    await handleDigitalPaymentConfirmed(orderDetail, vendor.whatsappNumber, customerPhone, language);
   } else {
-    await handlePhysicalPaymentConfirmed(orderDetail, vendor, customerPhone);
+    await handlePhysicalPaymentConfirmed(orderDetail, vendor, customerPhone, language);
   }
 
-  // Reset customer session
   await sessionRepository.reset(customerPhone, vendor.id);
 }
 
@@ -212,6 +334,7 @@ async function handlePhysicalPaymentConfirmed(
   order: import('../../repositories/order.repository').OrderWithDetails,
   vendor: Vendor,
   customerPhone: string,
+  language: Language,
 ): Promise<void> {
   const cart = order.orderItems.map((oi) => ({
     productId: oi.productId,
@@ -221,10 +344,7 @@ async function handlePhysicalPaymentConfirmed(
     productType: oi.product.productType as ProductType,
   }));
 
-  // Confirm to customer
-  await enqueue(customerPhone, msgPhysicalOrderConfirmedCustomer(order.id, vendor.businessName, cart));
-
-  // Alert vendor with full order details
+  await enqueue(customerPhone, msgPhysicalOrderConfirmedCustomer(order.id, vendor.businessName, cart, language));
   await enqueue(vendor.whatsappNumber, msgNewPhysicalOrder(order));
 }
 
@@ -234,6 +354,7 @@ async function handleDigitalPaymentConfirmed(
   order: import('../../repositories/order.repository').OrderWithDetails,
   vendorPhone: string,
   customerPhone: string,
+  language: Language,
 ): Promise<void> {
   const orderItem = order.orderItems[0];
   if (!orderItem) { logger.error('Digital order has no items', { orderId: order.id }); return; }
@@ -245,8 +366,6 @@ async function handleDigitalPaymentConfirmed(
     return;
   }
 
-  // Enqueue in the high-priority digital delivery queue
-  // The worker handles retries and failure alerting
   await digitalDeliveryQueue.add(
     {
       orderId: order.id,
@@ -255,22 +374,100 @@ async function handleDigitalPaymentConfirmed(
       productName: product.name,
       deliveryContent: product.deliveryContent,
       deliveryMessage: product.deliveryMessage ?? `Here is your ${product.name}. Enjoy!`,
+      language,
     },
     {
-      attempts: 5, // More retries for digital — customer paid and is waiting
+      attempts: 5,
       backoff: { type: 'exponential', delay: 1000 },
-      priority: 1, // Highest priority in the queue
+      priority: 1,
     },
   );
 
   logger.info('Digital delivery job enqueued', {
     orderId: order.id,
     customer: maskPhone(customerPhone),
+    language,
   });
+}
+
+// ─── Reorder Reply Handler ────────────────────────────────────────────────────
+
+async function handleReorderReply(
+  from: string,
+  rawMessage: string,
+  vendorId: string,
+  customerId: string,
+  products: import('@prisma/client').Product[],
+): Promise<boolean> {
+  const upper = rawMessage.trim().toUpperCase();
+
+  // Opt-out: STOP or OPT OUT
+  if (upper === 'STOP' || upper === 'OPT OUT') {
+    const nudge = await orderRepository.findRecentReorderNudge(customerId, vendorId);
+    if (nudge) {
+      await customerRepository.setReorderOptOut(from, true);
+      await enqueue(from, "Got it! You won't receive reorder reminders anymore. You can always type *MENU* to order anytime. 👍");
+      logger.info('Customer opted out of reorder reminders', { customer: maskPhone(from) });
+      return true;
+    }
+  }
+
+  // NO reply to a reorder nudge
+  if (upper === 'NO') {
+    const nudge = await orderRepository.findRecentReorderNudge(customerId, vendorId);
+    if (nudge) {
+      await enqueue(from, `No problem! Type *MENU* anytime you're ready to order. 😊`);
+      return true;
+    }
+  }
+
+  // YES reply to a reorder nudge — pre-fill cart with last order items
+  if (upper === 'YES') {
+    const nudge = await orderRepository.findRecentReorderNudge(customerId, vendorId);
+    if (nudge) {
+      // Build cart from last order items — only include still-available products
+      const cart: CartItem[] = [];
+      for (const oi of nudge.orderItems) {
+        const currentProduct = products.find((p) => p.id === oi.productId);
+        if (currentProduct) {
+          cart.push({
+            productId: currentProduct.id,
+            name: currentProduct.name,
+            quantity: oi.quantity,
+            unitPrice: currentProduct.price,
+            productType: currentProduct.productType as ProductType,
+          });
+        }
+      }
+
+      if (!cart.length) {
+        await enqueue(from, `Sorry, the items from your last order are no longer available. Type *MENU* to see what's on today. 😊`);
+        return true;
+      }
+
+      const cartLines = formatCartSummary(cart);
+      const total = formatNaira(calculateCartTotal(cart));
+
+      const newData: SessionData = { cart, activeOrderType: OrderType.PHYSICAL };
+      await sessionRepository.upsert(from, vendorId, ConversationState.ORDERING, newData);
+      await enqueue(
+        from,
+        `Perfect! I've added your last order to your cart. 🛒\n\n${cartLines}\n\nTotal: *${total}*\n\nReply *DONE* to checkout or *CLEAR* to start fresh.`,
+      );
+
+      logger.info('Reorder cart pre-filled', { customer: maskPhone(from), items: cart.length });
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ─── Queue Helper ─────────────────────────────────────────────────────────────
 
 async function enqueue(to: string, message: string): Promise<void> {
-  await messageQueue.add({ to, message }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true });
+  await messageQueue.add(
+    { to, message },
+    { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true },
+  );
 }
