@@ -54,8 +54,51 @@ import { normaliseMessage } from '../nlp-router.service';
 import { generateNotFoundResponse } from '../llm.service';
 import { getStoreStatus } from '../../utils/working-hours';
 import { offHoursContactRepository } from '../../repositories/offHoursContact.repository';
+import { sessionTimeoutQueue } from '../../queues/sessionTimeout.queue';
+import { SessionTimeoutJobData } from '../../jobs/sessionTimeout.job';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** States where inactivity nudge + auto-cancel should fire */
+const TIMEOUT_ACTIVE_STATES: ConversationState[] = [
+  ConversationState.BROWSING,
+  ConversationState.ORDERING,
+  ConversationState.AWAITING_ADDRESS,
+  ConversationState.AWAITING_PAYMENT,
+];
+
+/**
+ * Schedules a 10-min nudge job (and later a 5-min cancel job) for the session.
+ * Clears any existing jobs first so each message resets the timer.
+ * Writes a nonce to the session so stale jobs self-skip when the customer responds.
+ */
+async function scheduleSessionTimeout(
+  from: string,
+  vendorId: string,
+  state: ConversationState,
+  data: SessionData,
+): Promise<void> {
+  const nudgeJobId = `timeout:nudge:${from}:${vendorId}`;
+  const cancelJobId = `timeout:cancel:${from}:${vendorId}`;
+
+  // Cancel any pending timeout jobs so the timer resets from now
+  const [existingNudge, existingCancel] = await Promise.all([
+    sessionTimeoutQueue.getJob(nudgeJobId),
+    sessionTimeoutQueue.getJob(cancelJobId),
+  ]);
+  await Promise.all([existingNudge?.remove(), existingCancel?.remove()]);
+
+  if (!TIMEOUT_ACTIVE_STATES.includes(state)) return; // no timeout for IDLE / COMPLETED
+
+  const nonce = Math.random().toString(36).slice(2, 10);
+  // Persist nonce — the timeout job compares this to detect fresh messages
+  await sessionRepository.upsert(from, vendorId, state, { ...data, timeoutNonce: nonce });
+
+  await sessionTimeoutQueue.add(
+    { from, vendorId, nonce, type: 'nudge' } satisfies SessionTimeoutJobData,
+    { delay: 10 * 60 * 1000, jobId: nudgeJobId, removeOnComplete: true, removeOnFail: true },
+  );
+}
 
 function isLanguageChangeKeyword(text: string): boolean {
   const n = text.trim().toUpperCase().replace(/\s+/g, ' ');
@@ -148,6 +191,7 @@ export async function processIncomingMessage(
         const result = await runStateMachine('MENU', ConversationState.IDLE, { ...currentData, awaitingMenuConfirmation: undefined }, vendor, products, language);
         await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
         for (const msg of result.messages) await enqueue(from, msg);
+        await scheduleSessionTimeout(from, vendor.id, result.nextState, result.nextData);
         return;
       }
       // Non-affirmative reply — clear the flag and continue normal processing
@@ -168,6 +212,7 @@ export async function processIncomingMessage(
         };
         await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, newData);
         await enqueue(from, msgAskQuantity(pendingProduct.name, pendingProduct.price, language));
+        await scheduleSessionTimeout(from, vendor.id, ConversationState.ORDERING, newData);
         return;
       }
     }
@@ -191,14 +236,12 @@ export async function processIncomingMessage(
       const productId = messageToProcess.slice(6);
       if (productId === 'NOT_FOUND') {
         // Clear any stale pending product; set flag so an affirmative reply shows the menu
-        await sessionRepository.upsert(from, vendor.id, currentState, {
-          ...currentData,
-          nlpPendingProductId: undefined,
-          awaitingMenuConfirmation: true,
-        });
+        const notFoundData: SessionData = { ...currentData, nlpPendingProductId: undefined, awaitingMenuConfirmation: true };
+        await sessionRepository.upsert(from, vendor.id, currentState, notFoundData);
         const productNames = products.map((p) => p.name);
         const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName);
         await enqueue(from, reply);
+        await scheduleSessionTimeout(from, vendor.id, currentState, notFoundData);
       } else {
         const product = products.find((p) => p.id === productId);
         if (product) {
@@ -209,6 +252,7 @@ export async function processIncomingMessage(
             `✅ Yes, we have *${product.name}* — ${formatNaira(product.price)}!\n\n` +
             `Would you like to add it to your cart? Reply *YES* to add it or type *MENU* to see everything.`,
           );
+          await scheduleSessionTimeout(from, vendor.id, currentState, newData);
         }
       }
       return;
@@ -217,17 +261,19 @@ export async function processIncomingMessage(
     // ── Bug 2: ORDER:NOT_FOUND — clear stale selections, reply, stop early ───────
     if (messageToProcess === 'ORDER:NOT_FOUND') {
       // Clear all stale product state; set flag so an affirmative reply shows the menu
-      await sessionRepository.upsert(from, vendor.id, currentState, {
+      const notFoundData: SessionData = {
         ...currentData,
         nlpPendingProductId: undefined,
         pendingProductId: undefined,
         pendingProductName: undefined,
         pendingProductPrice: undefined,
         awaitingMenuConfirmation: true,
-      });
+      };
+      await sessionRepository.upsert(from, vendor.id, currentState, notFoundData);
       const productNames = products.map((p) => p.name);
       const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName);
       await enqueue(from, reply);
+      await scheduleSessionTimeout(from, vendor.id, currentState, notFoundData);
       // Handled by intent router — do not continue to state machine
       return;
     }
@@ -239,12 +285,14 @@ export async function processIncomingMessage(
       const result = await runStateMachine('MENU', ConversationState.IDLE, currentData, vendor, products, language);
       await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
       for (const msg of result.messages) await enqueue(from, msg);
+      await scheduleSessionTimeout(from, vendor.id, result.nextState, result.nextData);
       return;
     }
     if (nlpIntent === 'CANCEL') {
       const result = await runStateMachine('CANCEL', currentState, currentData, vendor, products, language);
       await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
       for (const msg of result.messages) await enqueue(from, msg);
+      await scheduleSessionTimeout(from, vendor.id, result.nextState, result.nextData);
       return;
     }
 
@@ -253,6 +301,7 @@ export async function processIncomingMessage(
     await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
 
     for (const msg of result.messages) await enqueue(from, msg);
+    await scheduleSessionTimeout(from, vendor.id, result.nextState, result.nextData);
 
     if (result.shouldCreateOrder) {
       await createOrderAndInitiatePayment(customer.id, vendor, result.nextData, from, language);

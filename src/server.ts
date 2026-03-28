@@ -23,6 +23,7 @@ import './queues/workers/digitalDelivery.worker';
 import './queues/workers/incomingMessage.worker';
 import './queues/workers/reorder.worker';
 import './queues/workers/openingNotification.worker';
+import './queues/workers/sessionTimeout.worker';
 
 import { messageQueue } from './queues/message.queue';
 import { paymentQueue } from './queues/payment.queue';
@@ -30,6 +31,7 @@ import { incomingMessageQueue } from './queues/incomingMessage.queue';
 import { digitalDeliveryQueue } from './queues/digitalDelivery.queue';
 import { reorderQueue } from './queues/reorder.queue';
 import { openingNotificationQueue } from './queues/openingNotification.queue';
+import { sessionTimeoutQueue } from './queues/sessionTimeout.queue';
 
 const server = app.listen(env.PORT, () => {
   logger.info('🚀 Server started', { port: env.PORT, env: env.NODE_ENV, pid: process.pid });
@@ -45,6 +47,7 @@ async function shutdown(signal: string): Promise<void> {
       digitalDeliveryQueue.close(),
       reorderQueue.close(),
       openingNotificationQueue.close(),
+      sessionTimeoutQueue.close(),
     ]);
     await prisma.$disconnect();
     logger.info('Shutdown complete');

@@ -96,6 +96,11 @@ export interface SessionData {
    * An affirmative reply (yes, ok, sure, please…) is treated as MENU instead of CONFIRM.
    */
   awaitingMenuConfirmation?: boolean;
+  /**
+   * Random nonce written to the session when a timeout job is scheduled.
+   * If the customer responds, a new nonce is written — the old job sees a mismatch and skips.
+   */
+  timeoutNonce?: string;
 }
 
 // ─── API Contracts ────────────────────────────────────────────────────────────
