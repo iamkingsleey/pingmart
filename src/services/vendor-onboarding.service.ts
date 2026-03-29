@@ -19,6 +19,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { Vendor, VendorSetupSession, Prisma } from '@prisma/client';
 import { prisma } from '../repositories/prisma';
 import { messageQueue } from '../queues/message.queue';
+import { InteractiveButton } from '../types';
 import { encryptBankAccount } from '../utils/crypto';
 import { logger, maskPhone } from '../utils/logger';
 import { env } from '../config/env';
@@ -483,6 +484,9 @@ async function advanceToPaymentSetup(
         `Please send your *Paystack Secret Key*.\n\n` +
         `You'll find it in *Paystack Dashboard → Settings → API Keys*.\n` +
         `It starts with *sk_live_* or *sk_test_*`,
+      buttons: [
+        { id: 'SKIP PAYSTACK', title: '🏦 Use Bank Only' },
+      ] as InteractiveButton[],
     });
   } else {
     await messageQueue.add({
@@ -503,10 +507,9 @@ async function advanceToPaymentSetup(
 async function classifyPaystackIntent(
   message: string,
 ): Promise<'PROVIDING_KEY' | 'SKIP_PAYSTACK' | 'ASKING_HELP' | 'OTHER'> {
-  // Fast path: it already looks like a real key
-  if (message.startsWith('sk_live_') || message.startsWith('sk_test_')) {
-    return 'PROVIDING_KEY';
-  }
+  // Fast paths — no LLM needed
+  if (message.startsWith('sk_live_') || message.startsWith('sk_test_')) return 'PROVIDING_KEY';
+  if (message.toUpperCase() === 'SKIP PAYSTACK') return 'SKIP_PAYSTACK';
   try {
     const response = await anthropic.messages.create({
       model: env.ANTHROPIC_MODEL,
@@ -681,7 +684,11 @@ async function handlePaymentSetup(
       `🏦 *${bankName}*\n` +
       `💳 ${accountNumber}\n` +
       `👤 ${accountName}\n\n` +
-      `Is this correct? Reply *YES* to continue or send the correct details.`,
+      `Is this correct?`,
+    buttons: [
+      { id: 'YES', title: '✅ Yes, Correct' },
+      { id: 'NO',  title: '✏️ Re-enter Details' },
+    ] as InteractiveButton[],
   });
 }
 
@@ -713,7 +720,17 @@ async function handleConfirmation(
     return;
   }
 
-  // Vendor wants to change something — re-show summary with instruction
+  // "CHANGE" button — re-show summary and ask what to change
+  if (upper === 'CHANGE') {
+    await showConfirmation(phone, vendor.id, data);
+    await messageQueue.add({
+      to: phone,
+      message: `What would you like to change? Just tell me and I'll update it. 😊`,
+    });
+    return;
+  }
+
+  // Any other free-text — treat as a change request, re-show summary
   await showConfirmation(phone, vendor.id, data);
   await messageQueue.add({
     to: phone,
@@ -736,10 +753,16 @@ async function showConfirmation(phone: string, vendorId: string, data: Collected
     `💳 Payment: ${capitalise(data.paymentMethod ?? 'bank')}${data.bankName ? ` (${bankDisplay})` : ''}\n` +
     `🕐 Hours: ${formatHours(data)}\n` +
     `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `Reply *GO LIVE* to activate your store\n` +
-    `or tell me anything you'd like to change.`;
+    `Everything look good? Tap *Go Live* to launch your store!`;
 
-  await messageQueue.add({ to: phone, message: summary });
+  await messageQueue.add({
+    to: phone,
+    message: summary,
+    buttons: [
+      { id: 'GO LIVE', title: '🚀 Go Live!'       },
+      { id: 'CHANGE',  title: '✏️ Make Changes'   },
+    ] as InteractiveButton[],
+  });
 }
 
 // ─── Activation ───────────────────────────────────────────────────────────────

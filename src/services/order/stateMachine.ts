@@ -162,6 +162,10 @@ export function handleBrowsing(
         activeOrderType: OrderType.DIGITAL,
         selectedProductId: selected.id,
       },
+      buttons: [
+        { id: 'BUY',  title: '🛒 Buy Now'       },
+        { id: 'MENU', title: '🏠 Back to Menu'   },
+      ],
     };
   }
 
@@ -271,14 +275,18 @@ export function handlePhysicalOrdering(
     // No inline note — ask for special instructions before continuing
     const addedMsg = msgItemAdded(currentData.pendingProductName ?? 'Item', qty, newCart, lang);
     const notePrompt =
-      `Any special instructions for this item?\n` +
+      `Any special instructions for *${currentData.pendingProductName ?? 'this item'}*?\n` +
       `_(e.g. extra spicy, no pepper, pack separately)_\n\n` +
-      `Reply with your note or type *SKIP* to continue. 😊`;
+      `Type your note, or tap *Skip* to continue.`;
 
     return {
       messages: [`${addedMsg}\n\n${notePrompt}`],
       nextState: ConversationState.AWAITING_ITEM_NOTE,
       nextData: { ...baseData, pendingNoteForProductId: currentData.pendingProductId },
+      buttons: [
+        { id: 'SKIP',   title: '⏩ Skip Note'    },
+        { id: 'CANCEL', title: '❌ Cancel Order'  },
+      ],
     };
   }
 

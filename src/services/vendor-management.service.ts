@@ -38,7 +38,7 @@ import {
 import { encryptBankAccount } from '../utils/crypto';
 import { logger, maskPhone } from '../utils/logger';
 import { env } from '../config/env';
-import { ProductType, OrderStatus } from '../types';
+import { ProductType, OrderStatus, InteractiveButton, InteractiveListSection } from '../types';
 import { extractBusinessFacts } from './llm.service';
 import { resolveEscalation } from './escalation.service';
 
@@ -78,6 +78,20 @@ function isStatusCommand(norm: string): boolean {
 
 async function send(phone: string, message: string): Promise<void> {
   await messageQueue.add({ to: phone, message });
+}
+
+async function sendButtons(phone: string, message: string, buttons: InteractiveButton[]): Promise<void> {
+  await messageQueue.add({ to: phone, message, buttons });
+}
+
+async function sendList(
+  phone: string,
+  message: string,
+  sections: InteractiveListSection[],
+  buttonText: string,
+  header?: string,
+): Promise<void> {
+  await messageQueue.add({ to: phone, message, listSections: sections, listButtonText: buttonText, listHeader: header });
 }
 
 // ─── Redis State ──────────────────────────────────────────────────────────────
@@ -330,23 +344,34 @@ async function startRemoveProduct(phone: string, vendor: Vendor): Promise<void> 
   }
 
   await setVendorState(phone, { step: 'REMOVE_PRODUCT_LIST' });
-  const list = products
-    .map((p, i) => `${i + 1}. ${p.name} — ${formatNaira(p.price)}${p.isAvailable ? '' : ' _(hidden)_'}`)
-    .join('\n');
-  await send(
+  await sendList(
     phone,
-    `🗑️ *Remove a Product*\n\nWhich product would you like to remove?\n\n${list}\n\n` +
-    `Reply with the product number or *CANCEL*.`,
+    `🗑️ *Remove a Product*\n\nWhich product would you like to remove?`,
+    [{
+      title: 'Your Products',
+      rows: products.map((p) => ({
+        id: p.id,
+        title: p.name.slice(0, 24),
+        description: `${formatNaira(p.price)}${p.isAvailable ? '' : ' · hidden'}`,
+      })),
+    }],
+    'Select Product',
+    '🗑️ Remove Product',
   );
 }
 
 async function selectRemoveProduct(phone: string, norm: string, vendor: Vendor): Promise<void> {
   const products = await productRepository.findAllByVendor(vendor.id);
-  const idx = parseInt(norm, 10);
-  const product = products[idx - 1];
+
+  // First try direct product-ID match (list-message tap); fall back to legacy numeric index
+  let product = products.find((p) => p.id === norm);
+  if (!product) {
+    const idx = parseInt(norm, 10);
+    product = products[idx - 1];
+  }
 
   if (!product) {
-    await send(phone, `❌ Invalid selection. Reply with 1–${products.length} or *CANCEL*.`);
+    await send(phone, `❌ Invalid selection. Please choose from the list or type *CANCEL*.`);
     return;
   }
 
@@ -356,9 +381,13 @@ async function selectRemoveProduct(phone: string, norm: string, vendor: Vendor):
     productName: product.name,
     productPrice: product.price,
   });
-  await send(
+  await sendButtons(
     phone,
-    `Remove *${product.name}* — ${formatNaira(product.price)}?\n\nReply *YES* to confirm or *NO* to cancel.`,
+    `Remove *${product.name}* — ${formatNaira(product.price)} from your menu?`,
+    [
+      { id: 'YES', title: '🗑️ Yes, Remove' },
+      { id: 'NO', title: '↩️ Keep It' },
+    ],
   );
 }
 
@@ -389,21 +418,34 @@ async function startUpdatePrice(phone: string, vendor: Vendor): Promise<void> {
   }
 
   await setVendorState(phone, { step: 'UPDATE_PRICE_LIST' });
-  const list = products.map((p, i) => `${i + 1}. ${p.name} — ${formatNaira(p.price)}`).join('\n');
-  await send(
+  await sendList(
     phone,
-    `💰 *Update a Price*\n\nWhich product price would you like to update?\n\n${list}\n\n` +
-    `Reply with the product number or *CANCEL*.`,
+    `💰 *Update a Price*\n\nWhich product's price would you like to change?`,
+    [{
+      title: 'Your Products',
+      rows: products.map((p) => ({
+        id: p.id,
+        title: p.name.slice(0, 24),
+        description: `Current price: ${formatNaira(p.price)}`,
+      })),
+    }],
+    'Select Product',
+    '💰 Update Price',
   );
 }
 
 async function selectUpdatePrice(phone: string, norm: string, vendor: Vendor): Promise<void> {
   const products = await productRepository.findAllByVendor(vendor.id);
-  const idx = parseInt(norm, 10);
-  const product = products[idx - 1];
+
+  // First try direct product-ID match (list-message tap); fall back to legacy numeric index
+  let product = products.find((p) => p.id === norm);
+  if (!product) {
+    const idx = parseInt(norm, 10);
+    product = products[idx - 1];
+  }
 
   if (!product) {
-    await send(phone, `❌ Invalid selection. Reply with 1–${products.length} or *CANCEL*.`);
+    await send(phone, `❌ Invalid selection. Please choose from the list or type *CANCEL*.`);
     return;
   }
 
@@ -496,17 +538,40 @@ async function replyToMyOrders(phone: string, norm: string, vendor: Vendor): Pro
       const addr = (order as any).deliveryAddress ?? 'Not provided';
       const emoji = STATUS_EMOJI[order.status] ?? '📦';
 
-      await send(
-        phone,
-        `📋 *Order ${formatOrderId(order.id)}*\n\n` +
+      const ordShortId = formatOrderId(order.id);
+      const actionButtons: InteractiveButton[] = (() => {
+        switch (order.status) {
+          case 'PAYMENT_CONFIRMED':
+            return [
+              { id: `CONFIRM ${ordShortId}`,   title: '✅ Confirm'   },
+              { id: `REJECT ${ordShortId}`,    title: '❌ Reject'    },
+              { id: `CONTACT ${ordShortId}`,   title: '📞 Contact'   },
+            ];
+          case 'CONFIRMED':
+            return [{ id: `PREPARING ${ordShortId}`, title: '👨‍🍳 Mark Preparing' }];
+          case 'PREPARING':
+            return [{ id: `READY ${ordShortId}`, title: '🚀 Mark Ready' }];
+          case 'READY':
+            return [{ id: `DELIVERED ${ordShortId}`, title: '✅ Mark Delivered' }];
+          default:
+            return [];
+        }
+      })();
+
+      const detailMsg =
+        `📋 *Order ${ordShortId}*\n\n` +
         `Customer: ${customerName} (${maskedPhone})\n` +
         `Items:\n${itemLines}\n\n` +
         `Total: *${formatNaira(order.totalAmount)}*\n` +
         `Address: ${addr}\n` +
         `Status: ${emoji} *${order.status.replace(/_/g, ' ')}*\n` +
-        `Time: ${formatTimestamp(order.createdAt)}\n\n` +
-        `Reply *CONFIRM ${formatOrderId(order.id)}* to confirm.`,
-      );
+        `Time: ${formatTimestamp(order.createdAt)}`;
+
+      if (actionButtons.length) {
+        await sendButtons(phone, detailMsg, actionButtons);
+      } else {
+        await send(phone, detailMsg);
+      }
       return;
     }
   }
@@ -704,17 +769,22 @@ async function handleNotificationsCommand(
 
 async function startSettings(phone: string, vendor: Vendor): Promise<void> {
   await setVendorState(phone, { step: 'SETTINGS_MENU' });
-  await send(
+  await sendList(
     phone,
-    `⚙️ *Store Settings — ${vendor.businessName}*\n\n` +
-    `What would you like to update?\n\n` +
-    `1. Business name\n` +
-    `2. Description / welcome message\n` +
-    `3. Working hours\n` +
-    `4. Payment method\n` +
-    `5. Bank details\n` +
-    `6. Change store code\n\n` +
-    `Reply with a number or *CANCEL*.`,
+    `⚙️ *Store Settings — ${vendor.businessName}*\n\nWhat would you like to update?`,
+    [{
+      title: 'Settings Options',
+      rows: [
+        { id: '1', title: '🏪 Business Name',    description: `Current: ${vendor.businessName.slice(0, 40)}`                    },
+        { id: '2', title: '📝 Description',       description: 'Your store welcome message'                                      },
+        { id: '3', title: '🕐 Working Hours',     description: `Current: ${vendor.workingHoursStart ?? '08:00'}–${vendor.workingHoursEnd ?? '21:00'}` },
+        { id: '4', title: '💳 Payment Method',    description: `Current: ${vendor.acceptedPayments ?? 'bank'}`                   },
+        { id: '5', title: '🏦 Bank Details',      description: 'Account number and name'                                         },
+        { id: '6', title: '🔑 Store Code',        description: `Current: ${vendor.storeCode ?? 'not set'}`                       },
+      ],
+    }],
+    'Choose Setting',
+    '⚙️ Settings',
   );
 }
 
@@ -751,13 +821,14 @@ async function handleSettingsChoice(phone: string, norm: string, vendor: Vendor)
 
     case '4':
       await setVendorState(phone, { step: 'SETTINGS_PAYMENT' });
-      await send(
+      await sendButtons(
         phone,
-        `How would you like to accept payments?\n\n` +
-        `1. Paystack (online card/bank)\n` +
-        `2. Bank transfer only\n` +
-        `3. Both\n\n` +
-        `(Current: *${vendor.acceptedPayments}*)\n\nReply with 1, 2, or 3. Type *CANCEL* to go back.`,
+        `💳 *Payment Method*\n\nHow would you like to accept payments?\n\n(Current: *${vendor.acceptedPayments ?? 'bank'}*)`,
+        [
+          { id: '1', title: '💳 Paystack Only' },
+          { id: '2', title: '🏦 Bank Transfer' },
+          { id: '3', title: '🔀 Both' },
+        ],
       );
       break;
 
