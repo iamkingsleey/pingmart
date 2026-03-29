@@ -13,6 +13,7 @@
     "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
     "migrate:reset": "prisma migrate reset --force",
+    "migrate:data": "ts-node --transpile-only src/scripts/migrate-data.ts",
     "generate": "prisma generate",
     "seed": "ts-node prisma/seed.ts",
     "studio": "prisma studio",
