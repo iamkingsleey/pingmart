@@ -321,6 +321,55 @@ async function handleCollectingInfo(
 
 // ─── Step: ADDING_PRODUCTS ────────────────────────────────────────────────────
 
+/**
+ * Deterministic pipe-separated product line parser.
+ *
+ * Handles all price formats a Nigerian vendor might send:
+ *   ₦21,500   →  21500
+ *   21,500    →  21500
+ *   ₦21500    →  21500
+ *   21500     →  21500
+ *   2.5k      →  2500
+ *
+ * Returns null if ANY line in the input cannot be parsed, so the caller can
+ * fall back to LLM extraction for natural-language messages.
+ */
+function tryParsePipeLines(message: string): ProductInput[] | null {
+  const lines = message
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && l.includes('|'));
+
+  if (lines.length === 0) return null;
+
+  const results: ProductInput[] = [];
+
+  for (const line of lines) {
+    const parts = line.split('|').map((s) => s.trim());
+    const [name, rawPrice, category, description] = parts;
+
+    if (!name || !rawPrice) return null;
+
+    // Strip ₦ symbol, commas, and any stray whitespace, then handle "k" suffix
+    let priceStr = rawPrice.replace(/[₦,\s]/g, '');
+    if (/^\d+(\.\d+)?k$/i.test(priceStr)) {
+      priceStr = String(parseFloat(priceStr) * 1000);
+    }
+
+    const price = parseFloat(priceStr);
+    if (isNaN(price) || price <= 0) return null;
+
+    results.push({
+      name,
+      price,
+      ...(category ? { category } : {}),
+      ...(description ? { description } : {}),
+    });
+  }
+
+  return results.length > 0 ? results : null;
+}
+
 async function handleAddingProducts(
   phone: string,
   message: string,
@@ -344,34 +393,59 @@ async function handleAddingProducts(
     return;
   }
 
-  // Use LLM to extract products from this message
-  let extracted: { products: ProductInput[]; isDone: boolean };
-  try {
-    const result = await anthropic.messages.create({
-      model: env.ANTHROPIC_MODEL,
-      max_tokens: 512,
-      system: buildProductExtractionPrompt(data.businessType ?? 'general'),
-      messages: [{ role: 'user', content: message }],
-    });
-    const text = result.content[0].type === 'text' ? result.content[0].text : '{}';
-    extracted = JSON.parse(text.trim());
-  } catch (err) {
-    logger.error('Onboarding LLM error (ADDING_PRODUCTS)', { err, phone: maskPhone(phone) });
+  // ── Fast path: deterministic pipe-separated parser ───────────────────────
+  // Handles structured input like "Name | ₦21,500 | Category" without an LLM call.
+  // Supports ₦ symbol, comma-formatted numbers, and multi-line (multiple products at once).
+  const pipeProducts = tryParsePipeLines(message);
+  let extractedProducts: ProductInput[];
+  let isDone = false;
+
+  if (pipeProducts !== null) {
+    extractedProducts = pipeProducts;
+  } else {
+    // ── Fallback: LLM extraction for natural-language input ─────────────────
+    try {
+      const result = await anthropic.messages.create({
+        model: env.ANTHROPIC_MODEL,
+        max_tokens: 512,
+        system: buildProductExtractionPrompt(data.businessType ?? 'general'),
+        messages: [{ role: 'user', content: message }],
+      });
+      const rawText = result.content[0].type === 'text' ? result.content[0].text : '{}';
+      // Strip markdown fences Claude sometimes adds
+      const jsonText = rawText.startsWith('```')
+        ? rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+        : rawText.trim();
+      const llmResult = JSON.parse(jsonText) as { products: ProductInput[]; isDone: boolean };
+      extractedProducts = llmResult.products ?? [];
+      isDone = llmResult.isDone ?? false;
+    } catch (err) {
+      logger.error('Onboarding LLM error (ADDING_PRODUCTS)', { err, phone: maskPhone(phone) });
+      await messageQueue.add({
+        to: phone,
+        message: `Hmm, I couldn't read that product format. Try:\n*Product Name | Price | Category*\n\nExample: _CeraVe Cleanser | ₦21,500 | Skincare_ 😊`,
+      });
+      return;
+    }
+  }
+
+  if (extractedProducts.length === 0) {
     await messageQueue.add({
       to: phone,
-      message: `Hmm, I couldn't read that product format. Try: *Product Name | Price | Category* 😊`,
+      message:
+        `I couldn't find any products in that message. Try:\n*Product Name | Price | Category*\n\nExample: _CeraVe Cleanser | ₦21,500 | Skincare_ 😊`,
     });
     return;
   }
 
-  const newProducts = [...products, ...(extracted.products ?? [])];
+  const newProducts = [...products, ...extractedProducts];
 
   await prisma.vendorSetupSession.update({
     where: { id: session.id },
     data: { collectedData: { ...data, products: newProducts } as unknown as PrismaJson },
   });
 
-  const names = (extracted.products ?? []).map(p => `*${p.name}* — ₦${p.price.toLocaleString()}`).join('\n');
+  const names = extractedProducts.map((p) => `*${p.name}* — ₦${p.price.toLocaleString()}`).join('\n');
   await messageQueue.add({
     to: phone,
     message:
@@ -380,7 +454,7 @@ async function handleAddingProducts(
       `Send another product or type *DONE* when you're finished. 😊`,
   });
 
-  if (extracted.isDone) {
+  if (isDone) {
     await advanceToPaymentSetup(phone, vendor, session, { ...data, products: newProducts });
   }
 }
@@ -425,6 +499,44 @@ async function advanceToPaymentSetup(
 
 // ─── Step: PAYMENT_SETUP ──────────────────────────────────────────────────────
 
+/** Classifies vendor intent when we're waiting for a Paystack key. */
+async function classifyPaystackIntent(
+  message: string,
+): Promise<'PROVIDING_KEY' | 'SKIP_PAYSTACK' | 'ASKING_HELP' | 'OTHER'> {
+  // Fast path: it already looks like a real key
+  if (message.startsWith('sk_live_') || message.startsWith('sk_test_')) {
+    return 'PROVIDING_KEY';
+  }
+  try {
+    const response = await anthropic.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 20,
+      messages: [
+        {
+          role: 'user',
+          content:
+            `A vendor is setting up their WhatsApp store and was asked for their Paystack secret key.\n` +
+            `They replied: "${message}"\n\n` +
+            `Classify their intent. Reply with exactly one word:\n` +
+            `- PROVIDING_KEY   → they are actually giving a Paystack key\n` +
+            `- SKIP_PAYSTACK   → they want to skip Paystack and use bank transfer instead\n` +
+            `- ASKING_HELP     → they're confused and asking what this is or where to find it\n` +
+            `- OTHER           → something else entirely\n\n` +
+            `Reply with only the one word, nothing else.`,
+        },
+      ],
+    });
+    const raw = (response.content[0] as { type: string; text: string }).text.trim().toUpperCase();
+    if (raw === 'PROVIDING_KEY' || raw === 'SKIP_PAYSTACK' || raw === 'ASKING_HELP' || raw === 'OTHER') {
+      return raw;
+    }
+    return 'OTHER';
+  } catch {
+    // On error, assume they're trying to provide a key — let the format check handle it
+    return 'PROVIDING_KEY';
+  }
+}
+
 async function handlePaymentSetup(
   phone: string,
   message: string,
@@ -438,6 +550,42 @@ async function handlePaymentSetup(
   // Paystack key
   if (paymentMethod === 'paystack' || paymentMethod === 'both') {
     if (!data.paystackKeyProvided) {
+      // ── Intent check BEFORE format validation ────────────────────────────────
+      const intent = await classifyPaystackIntent(trimmed);
+
+      if (intent === 'SKIP_PAYSTACK') {
+        // Vendor wants bank transfer only — update payment method and ask for bank details
+        const updatedData: CollectedData = { ...data, paymentMethod: 'bank', paystackKeyProvided: false };
+        await prisma.vendorSetupSession.update({
+          where: { id: session.id },
+          data: { collectedData: updatedData as unknown as PrismaJson },
+        });
+        await messageQueue.add({
+          to: phone,
+          message:
+            `No problem! We'll use bank transfer only. ` +
+            `Your customers will see your bank details at checkout. ✅\n\n` +
+            `Please send your bank details:\n` +
+            `*Bank Name | Account Number | Account Name*\n\n` +
+            `Example: _GTBank | 0123456789 | Mallam Ahmed Suya_`,
+        });
+        return;
+      }
+
+      if (intent === 'ASKING_HELP') {
+        await messageQueue.add({
+          to: phone,
+          message:
+            `Your Paystack Secret Key lets your store accept card payments. 💳\n\n` +
+            `*Where to find it:*\n` +
+            `Paystack Dashboard → Settings → API Keys\n\n` +
+            `It looks like: _sk_live_xxxx..._ or _sk_test_xxxx..._\n\n` +
+            `If you don't use Paystack, just reply *"bank transfer only"* and we'll skip this step.`,
+        });
+        return;
+      }
+
+      // PROVIDING_KEY or OTHER — run format validation
       if (!trimmed.startsWith('sk_live_') && !trimmed.startsWith('sk_test_')) {
         await messageQueue.add({
           to: phone,
@@ -751,6 +899,7 @@ Return ONLY valid JSON in this exact format (no other text):
 
 Rules:
 - Set isDone: true if vendor says DONE, FINISH, THAT'S ALL, or similar
+- Price must always be a plain number (e.g. 21500). Strip ₦ symbol and commas before converting
 - If price has "k" suffix (e.g. "2.5k"), convert to number (2500)
 - If no category given, use the business type as default
 - If no description given, omit the field (do not include it as null)

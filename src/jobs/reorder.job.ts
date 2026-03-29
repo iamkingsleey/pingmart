@@ -10,9 +10,8 @@ import { subDays, startOfDay, endOfDay } from 'date-fns';
 import { orderRepository } from '../repositories/order.repository';
 import { sendReorderNudge } from '../services/reorder.service';
 import { logger } from '../utils/logger';
-import { env } from '../config/env';
 
-const REORDER_DAYS_AFTER = parseInt(env.REORDER_DAYS_AFTER ?? '7', 10);
+const REORDER_DAYS_AFTER = parseInt(process.env.REORDER_DAYS_AFTER ?? '7', 10);
 
 export async function runReorderJob(): Promise<void> {
   logger.info('Reorder job started', { daysAfter: REORDER_DAYS_AFTER });

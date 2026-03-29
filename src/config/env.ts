@@ -8,17 +8,25 @@
 import { z } from 'zod';
 import dotenv from 'dotenv';
 
-dotenv.config();
+// override: true ensures .env values win over any empty shell exports
+// (e.g. ANTHROPIC_API_KEY exported as "" by the Claude Code CLI environment)
+dotenv.config({ override: true });
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().default('3000').transform(Number),
 
   // Database
-  DATABASE_URL: z.string().url('DATABASE_URL must be a valid PostgreSQL URL'),
+  DATABASE_URL: z.string().regex(
+    /^postgresql?:\/\/.+/i,
+    'DATABASE_URL must be a valid PostgreSQL URL (postgresql:// or postgres://)',
+  ),
 
-  // Redis
-  REDIS_URL: z.string().url('REDIS_URL must be a valid Redis URL'),
+  // Redis — accepts redis:// and rediss:// (TLS), any hostname including Railway internals
+  REDIS_URL: z.string().regex(
+    /^rediss?:\/\/.+/i,
+    'REDIS_URL must be a valid Redis URL (redis:// or rediss://)',
+  ),
 
   // WhatsApp Cloud API
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
