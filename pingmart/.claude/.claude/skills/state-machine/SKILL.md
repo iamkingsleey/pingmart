@@ -99,5 +99,20 @@ Once a user selects a language, store it on the session. All subsequent messages
 6. Add the state to the `whatsapp-testing` SKILL.md test checklist
 7. Never remove an old state without a migration — existing sessions may be in that state
 
+## Router-Level Redis States (router.service.ts)
+The router uses `router:state:${phone}` in Redis to track pre-session states for unknown senders:
+
+| State | Meaning |
+|---|---|
+| `LANG_INIT` | Brand-new phone is choosing their language (before "shop or sell?") |
+| `SHOP_OR_SELL` | Phone has chosen language and is choosing shop vs. sell |
+
+These states are checked at the TOP of `routeIncomingMessage` before any DB lookups. Unrecognised replies re-show the relevant screen.
+
+## Language Switch Redis State (order.service.ts)
+Mid-conversation language detection uses a separate key `lang:switch:${phone}` with 5-min TTL. When this key exists, the bot has already sent a switch prompt and is waiting for the customer's `SWITCH_LANG:<code>` or `KEEP_LANG` button response.
+
+`SWITCH_LANG` / `KEEP_LANG` are handled at the TOP of `processIncomingMessage`, before the working-hours gate, so they always work regardless of session state.
+
 ## Session Expiry
 Sessions older than 24 hours in a non-terminal state should reset to `IDLE`. This handles cases where users abandon mid-flow. Do NOT delete the session — just reset the state and clear cartItems.

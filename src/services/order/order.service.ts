@@ -35,6 +35,7 @@ import {
   msgDeliveryOrPickup,
   msgPickupLocationList,
   msgPickupLocationConfirmed,
+  msgLanguageSwitchPrompt,
 } from '../whatsapp/templates';
 import { pickupLocationRepository } from '../../repositories/pickupLocation.repository';
 import { paymentTimeoutQueue } from '../../queues/paymentTimeout.queue';
@@ -65,7 +66,7 @@ import { logger, maskPhone, maskReference } from '../../utils/logger';
 import { messageQueue } from '../../queues/message.queue';
 import { digitalDeliveryQueue } from '../../queues/digitalDelivery.queue';
 import { normaliseMessage } from '../nlp-router.service';
-import { generateNotFoundResponse, generateContextAwareAnswer } from '../llm.service';
+import { generateNotFoundResponse, generateContextAwareAnswer, detectMessageLanguage } from '../llm.service';
 import { detectEscalationTrigger, triggerHumanEscalation } from '../escalation.service';
 import { getStoreStatus } from '../../utils/working-hours';
 import { offHoursContactRepository } from '../../repositories/offHoursContact.repository';
@@ -144,6 +145,22 @@ export async function processIncomingMessage(
       logger.info('Duplicate message skipped', { msgId: messageId.slice(-8) });
       return;
     }
+  }
+
+  // ── Language switch reply — handle before any other processing ────────────
+  // These are interactive button payloads from the mid-conversation language prompt.
+  const trimmedMsg = rawMessage.trim();
+  const switchLangMatch = trimmedMsg.match(/^SWITCH_LANG:(\w+)$/i);
+  if (switchLangMatch) {
+    const newLang = switchLangMatch[1]!.toLowerCase() as Language;
+    await customerRepository.updateLanguage(from, newLang);
+    await redis.del(`lang:switch:${from}`);
+    logger.info('Customer switched language mid-conversation', { from: maskPhone(from), lang: newLang });
+    // Fall through — process normally with updated language
+  } else if (trimmedMsg.toUpperCase() === 'KEEP_LANG') {
+    await redis.del(`lang:switch:${from}`);
+    logger.info('Customer kept current language', { from: maskPhone(from) });
+    return;
   }
 
   try {
@@ -409,6 +426,24 @@ export async function processIncomingMessage(
       ConversationState.AWAITING_ADDRESS,
       ConversationState.AWAITING_ITEM_NOTE,
     ];
+
+    // ── Mid-conversation language detection ───────────────────────────────────
+    // Detect if the customer switched to a different language since they picked one.
+    // Skip free-text states where trigger words could be incidental (address, item note).
+    // Also skip if there's already a pending switch prompt outstanding.
+    if (!skipNlpStates.includes(currentState)) {
+      const pendingLangSwitch = await redis.get(`lang:switch:${from}`);
+      if (!pendingLangSwitch) {
+        const detected = await detectMessageLanguage(rawMessage);
+        if (detected && detected !== language) {
+          await redis.setex(`lang:switch:${from}`, 5 * 60, detected);
+          const { message: switchMsg, buttons: switchButtons } = msgLanguageSwitchPrompt(detected, language);
+          await enqueueButtons(from, switchMsg, switchButtons);
+          logger.info('Language switch prompt sent', { from: maskPhone(from), detected, current: language });
+          return;
+        }
+      }
+    }
     let messageToProcess = rawMessage;
     let nlpIntent: string | null = null;
     let nlpResult: Awaited<ReturnType<typeof normaliseMessage>> | null = null;

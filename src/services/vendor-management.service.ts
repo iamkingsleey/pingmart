@@ -39,7 +39,7 @@ import { encryptBankAccount } from '../utils/crypto';
 import { logger, maskPhone } from '../utils/logger';
 import { env } from '../config/env';
 import { ProductType, OrderStatus, InteractiveButton, InteractiveListSection } from '../types';
-import { extractBusinessFacts } from './llm.service';
+import { extractBusinessFacts, classifyVendorDashboardIntent } from './llm.service';
 import { resolveEscalation } from './escalation.service';
 
 // ─── Plan Limits ──────────────────────────────────────────────────────────────
@@ -141,13 +141,14 @@ export async function handleVendorDashboard(
     return;
   }
 
-  await handleTopLevelCommand(phone, norm, vendor);
+  await handleTopLevelCommand(phone, message, norm, vendor);
 }
 
 // ─── Top-Level Command Dispatch ───────────────────────────────────────────────
 
 async function handleTopLevelCommand(
   phone: string,
+  rawMessage: string,
   norm: string,
   vendor: Vendor,
 ): Promise<void> {
@@ -175,8 +176,27 @@ async function handleTopLevelCommand(
       return startSettings(phone, vendor);
     case 'TEACH BOT':
       return startTeachBot(phone, vendor);
-    default:
+    default: {
+      // Try to understand natural language before falling back to dashboard
+      const intent = await classifyVendorDashboardIntent(rawMessage);
+      const INTENT_MAP: Record<string, string> = {
+        ADD_PRODUCT:    'ADD PRODUCT',
+        REMOVE_PRODUCT: 'REMOVE PRODUCT',
+        UPDATE_PRICE:   'UPDATE PRICE',
+        MY_ORDERS:      'MY ORDERS',
+        MY_LINK:        'MY LINK',
+        PAUSE_STORE:    vendor.isPaused ? 'RESUME STORE' : 'PAUSE STORE',
+        RESUME_STORE:   'RESUME STORE',
+        NOTIFICATIONS:  'NOTIFICATIONS',
+        SETTINGS:       'SETTINGS',
+        TEACH_BOT:      'TEACH BOT',
+      };
+      const mapped = INTENT_MAP[intent];
+      if (mapped) {
+        return handleTopLevelCommand(phone, rawMessage, mapped, vendor);
+      }
       return showDashboard(phone, vendor);
+    }
   }
 }
 

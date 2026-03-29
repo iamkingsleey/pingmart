@@ -26,9 +26,11 @@ import { processIncomingMessage } from './order/order.service';
 import { handleVendorStatusCommand } from './delivery/physicalDelivery.service';
 import { startVendorOnboarding, handleVendorOnboarding } from './vendor-onboarding.service';
 import { handleVendorDashboard } from './vendor-management.service';
+import { customerRepository } from '../repositories/customer.repository';
 import { logger, maskPhone } from '../utils/logger';
 import { ConversationState } from '../types';
 import { formatNaira } from '../utils/formatters';
+import { Language } from '../i18n';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -69,8 +71,12 @@ export async function routeIncomingMessage(
 
   logger.info('Router: routing message', { from: maskPhone(senderPhone) });
 
-  // ── 2. Pending "shop or sell?" reply ─────────────────────────────────────
+  // ── 2. Pending router-state replies ──────────────────────────────────────
   const routerState = await redis.get(`router:state:${senderPhone}`);
+  if (routerState === 'LANG_INIT') {
+    await handleLangInitReply(senderPhone, message);
+    return;
+  }
   if (routerState === 'SHOP_OR_SELL') {
     await handleShopOrSellReply(senderPhone, message);
     return;
@@ -137,9 +143,9 @@ export async function routeIncomingMessage(
     return;
   }
 
-  // ── 8. Unknown sender — show shop or sell screen ──────────────────────────
-  logger.info('Router → unknown sender, showing shop/sell screen', { from: maskPhone(senderPhone) });
-  await showShopOrSellScreen(senderPhone);
+  // ── 8. Unknown sender — language selection first, then shop/sell ─────────
+  logger.info('Router → unknown sender, showing language selection', { from: maskPhone(senderPhone) });
+  await showLanguageSelectionScreen(senderPhone);
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -276,6 +282,56 @@ async function startCustomerSession(phone: string, vendor: Vendor): Promise<void
   // ── 3. New customer or first visit to this store ───────────────────────────
   await sessionRepository.reset(phone, vendor.id);
   await processIncomingMessage(phone, 'MENU', vendor.whatsappNumber, undefined);
+}
+
+/**
+ * Shows the language-selection prompt to a brand-new sender.
+ * This is always the FIRST thing a new phone sees before "shop or sell?".
+ */
+async function showLanguageSelectionScreen(phone: string): Promise<void> {
+  await redis.setex(`router:state:${phone}`, ROUTER_STATE_TTL_SECS, 'LANG_INIT');
+  await messageQueue.add({
+    to: phone,
+    message:
+      `👋 Welcome to *Pingmart*!\n\n` +
+      `Please choose your language / Biko họrọ asụsụ gị:\n\n` +
+      `1️⃣ English\n` +
+      `2️⃣ Pidgin\n` +
+      `3️⃣ Igbo\n` +
+      `4️⃣ Yoruba\n` +
+      `5️⃣ Hausa\n\n` +
+      `Reply with a number (1–5)`,
+  });
+}
+
+/**
+ * Handles the reply to the language-selection prompt.
+ * Saves the chosen language to the Customer record, then shows "shop or sell?".
+ */
+async function handleLangInitReply(phone: string, message: string): Promise<void> {
+  const LANG_MAP: Record<string, Language> = {
+    '1': 'en',
+    '2': 'pid',
+    '3': 'ig',
+    '4': 'yo',
+    '5': 'ha',
+  };
+  const choice = message.trim();
+  const lang = LANG_MAP[choice];
+
+  if (!lang) {
+    // Unrecognised reply — show language screen again
+    await showLanguageSelectionScreen(phone);
+    return;
+  }
+
+  // Persist language to Customer record (create if first visit)
+  await customerRepository.findOrCreate(phone);
+  await customerRepository.updateLanguage(phone, lang);
+
+  // Clear LANG_INIT state and proceed to shop/sell
+  await redis.del(`router:state:${phone}`);
+  await showShopOrSellScreen(phone);
 }
 
 /**

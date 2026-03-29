@@ -82,5 +82,23 @@ If adding a 6th language (e.g. Edo, Ijaw):
 5. Update `REORDER_DAYS_AFTER` nudge templates for the new language
 6. Test the full customer + vendor flow in that language
 
+## Language Selection for New Phones (router.service.ts)
+Every brand-new phone number sees language selection BEFORE the "shop or sell?" screen:
+1. Unknown sender arrives → `showLanguageSelectionScreen()` → Redis state `LANG_INIT` for 30 min
+2. User replies 1–5 → `handleLangInitReply()` → `customerRepository.findOrCreate()` + `updateLanguage()` → `showShopOrSellScreen()`
+3. Unrecognised reply → show language screen again
+
+This means language is persisted to the Customer DB record from the very first interaction, before they even choose to shop or sell.
+
+## Mid-Conversation Language Detection (order.service.ts)
+If a customer switches language mid-conversation (e.g., started in English but suddenly writes Pidgin):
+1. `hasForeignLanguageTrigger(message)` — fast regex check for Pidgin/Igbo/Yoruba/Hausa trigger words (no LLM cost if clearly English)
+2. If trigger words found → `detectMessageLanguage(message)` → LLM call returning `'pid'|'ig'|'yo'|'ha'|null`
+3. If detected ≠ current session language: set Redis `lang:switch:${phone}` (5 min TTL), send `msgLanguageSwitchPrompt()` in the DETECTED language, return
+4. On `SWITCH_LANG:<code>` button tap: `customerRepository.updateLanguage()` + delete Redis key, continue normally
+5. On `KEEP_LANG` button tap: delete Redis key, return (no further action)
+
+Detection is skipped for `AWAITING_ADDRESS`, `AWAITING_ITEM_NOTE`, and `LANGUAGE_SELECTION` states (free-text inputs where trigger words could be incidental).
+
 ## Language Switch
-If a user says "switch to English" or "change language" at any point, detect this intent and show the language selection screen again. Update their session language after new selection.
+If a user says "switch to English" or "change language" at any point, `isLanguageChangeKeyword()` detects it and shows the language selection list again. Update their session language after new selection.

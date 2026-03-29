@@ -480,6 +480,45 @@ export function msgPickupLocationConfirmed(
 }
 
 /** Alert to vendor when digital delivery fails after all retries — English only */
+// Language names in each language for the switch prompt
+const LANG_NAMES: Record<Language, Record<Language, string>> = {
+  en:  { en: 'English', pid: 'Pidgin', ig: 'Igbo', yo: 'Yorùbá', ha: 'Hausa' },
+  pid: { en: 'English', pid: 'Pidgin', ig: 'Igbo', yo: 'Yorùbá', ha: 'Hausa' },
+  ig:  { en: 'Bekee',   pid: 'Pidgin', ig: 'Igbo', yo: 'Yorùbá', ha: 'Hausa' },
+  yo:  { en: 'Gẹ̀ẹ́sì',  pid: 'Pidgin', ig: 'Igbo', yo: 'Yorùbá', ha: 'Hausa' },
+  ha:  { en: 'Turanci', pid: 'Pidgin', ig: 'Igbo', yo: 'Yorùbá', ha: 'Hausa' },
+};
+
+const LANG_SWITCH_PROMPTS: Record<Language, string> = {
+  en:  `I noticed you may prefer {lang}. Would you like to switch?`,
+  pid: `I don see say you dey yarn {lang}. You wan switch? 🌍`,
+  ig:  `Ahụrụ m na ị na-asụ {lang}. Ịchọrọ ịgbanwe?`,
+  yo:  `Mo ti rii pé o ń sọ {lang}. Ṣé o fẹ́ yipada?`,
+  ha:  `Na lura kuna magana {lang}. Kuna son canzawa?`,
+};
+
+/**
+ * Prompt sent when mid-conversation language detection fires.
+ * The message is written in the DETECTED language, not the current session language.
+ */
+export function msgLanguageSwitchPrompt(
+  detected: Language,
+  current: Language,
+): { message: string; buttons: InteractiveButton[] } {
+  const detectedName = (LANG_NAMES[detected] ?? LANG_NAMES.en)[detected] ?? detected;
+  const currentName  = (LANG_NAMES[detected] ?? LANG_NAMES.en)[current]  ?? current;
+  const promptTemplate = LANG_SWITCH_PROMPTS[detected] ?? LANG_SWITCH_PROMPTS.en;
+  const message = (promptTemplate as string).replace('{lang}', detectedName);
+
+  return {
+    message,
+    buttons: [
+      { id: `SWITCH_LANG:${detected}`, title: `✅ Yes, use ${detectedName}` },
+      { id: 'KEEP_LANG',               title: `❌ No, keep ${currentName}`  },
+    ],
+  };
+}
+
 export function msgDigitalDeliveryFailedVendorAlert(order: OrderWithDetails): string {
   const productName = order.orderItems[0]?.product.name ?? 'Unknown product';
   const maskedPhone = order.customer.whatsappNumber.replace(/(\+\d{3})\d+(\d{4})/, '$1***$2');

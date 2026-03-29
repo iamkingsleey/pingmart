@@ -33,6 +33,30 @@ User message → LLM intent check → if intent matches expected → validate fo
 | `SHOW_POPULAR` | "best seller", "what people order most" | — |
 | `UNKNOWN` | anything else | Falls back to keyword matching |
 
+## Vendor Dashboard Intents (`classifyVendorDashboardIntent`)
+Used in `handleTopLevelCommand` default branch when the vendor sends natural language instead of an exact command.
+
+Returns one of: `ADD_PRODUCT`, `REMOVE_PRODUCT`, `UPDATE_PRICE`, `MY_ORDERS`, `MY_LINK`, `PAUSE_STORE`, `RESUME_STORE`, `NOTIFICATIONS`, `SETTINGS`, `TEACH_BOT`, `GREETING`, `UNKNOWN`
+
+| Token | Trigger examples |
+|---|---|
+| `ADD_PRODUCT` | "I wan add product", "let me add something new", "I want to add item" |
+| `REMOVE_PRODUCT` | "remove item", "delete product", "take off jollof" |
+| `UPDATE_PRICE` | "change price", "update cost", "jollof now costs 2000" |
+| `MY_ORDERS` | "show my orders", "any new orders?", "wetin people order?" |
+| `MY_LINK` | "send my link", "give me store link", "I need my URL" |
+| `PAUSE_STORE` | "pause store", "I wan close shop", "stop taking orders" |
+| `RESUME_STORE` | "open shop", "resume orders", "I dey back" |
+| `NOTIFICATIONS` | "manage alerts", "add number", "change notification" |
+| `SETTINGS` | "update business name", "change hours", "edit info" |
+| `TEACH_BOT` | "train bot", "add FAQ", "bot should know this" |
+| `GREETING` | "hi", "hello", "good morning" — show dashboard |
+| `UNKNOWN` | anything else — show dashboard |
+
+When `GREETING` or `UNKNOWN` is returned, the dashboard is shown. For all other tokens, the dispatch maps to the exact `switch(norm)` case string in `handleTopLevelCommand`.
+
+`PAUSE_STORE` is special: it maps to `RESUME STORE` if `vendor.isPaused` is true (avoids sending vendor to pause an already-paused store).
+
 ## Vendor Onboarding Intents
 Used during vendor onboarding when a specific format is expected but vendor sends plain English.
 

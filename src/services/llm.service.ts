@@ -136,6 +136,103 @@ Rules:
   }
 }
 
+// ─── Vendor Dashboard Intent Classifier ──────────────────────────────────────
+
+/**
+ * Maps a vendor's free-form message to a known dashboard command.
+ * Returns one of the exact command strings (e.g. 'ADD PRODUCT'),
+ * 'GREETING' for hi/hello, or 'UNKNOWN' when genuinely ambiguous.
+ *
+ * Only called from handleTopLevelCommand when no exact keyword matched.
+ */
+export async function classifyVendorDashboardIntent(message: string): Promise<string> {
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 20,
+      system:
+        `You are an intent classifier for a WhatsApp store management bot in Nigeria.\n` +
+        `A vendor (store owner) sent this message. Map it to EXACTLY ONE of these command tokens:\n` +
+        `ADD_PRODUCT      — add a new product / item\n` +
+        `REMOVE_PRODUCT   — remove / delete a product\n` +
+        `UPDATE_PRICE     — change / update price of a product\n` +
+        `MY_ORDERS        — view orders, see recent orders\n` +
+        `MY_LINK          — get store link, share store link\n` +
+        `PAUSE_STORE      — pause / stop taking orders\n` +
+        `RESUME_STORE     — resume / reopen store\n` +
+        `NOTIFICATIONS    — manage notification numbers, alerts\n` +
+        `SETTINGS         — change business name, description, hours, bank, payment\n` +
+        `TEACH_BOT        — add business context, FAQs, teach the bot\n` +
+        `GREETING         — hi, hello, hey, good morning, good afternoon\n` +
+        `UNKNOWN          — anything else that doesn't fit\n` +
+        `Reply with ONLY the token — no explanation, no punctuation, nothing else.`,
+      messages: [{ role: 'user', content: message }],
+    });
+    const raw = response.content[0];
+    if (raw.type !== 'text') return 'UNKNOWN';
+    const token = raw.text.trim().toUpperCase().split(/\s/)[0] ?? 'UNKNOWN';
+    const VALID = new Set([
+      'ADD_PRODUCT', 'REMOVE_PRODUCT', 'UPDATE_PRICE', 'MY_ORDERS', 'MY_LINK',
+      'PAUSE_STORE', 'RESUME_STORE', 'NOTIFICATIONS', 'SETTINGS', 'TEACH_BOT',
+      'GREETING', 'UNKNOWN',
+    ]);
+    return VALID.has(token) ? token : 'UNKNOWN';
+  } catch {
+    return 'UNKNOWN';
+  }
+}
+
+// ─── Mid-Conversation Language Detector ──────────────────────────────────────
+
+export type DetectedLanguage = 'pid' | 'ig' | 'yo' | 'ha' | null;
+
+/**
+ * Fast trigger-word check — avoids an LLM call for clearly-English messages.
+ * Returns true if the message contains markers of a Nigerian language.
+ */
+function hasForeignLanguageTrigger(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    /\b(abeg|wetin|wahala|oya\b|sabi\b|dey\b|comot|abi\b|jare|una\b|dem\b|naija|chop\b|e don|na wa|no wahala|oga\b)\b/.test(m) || // Pidgin
+    /\b(nnoo|daalu|kedu|biko|nwanne|chineke|gwa m|ozoemena|bia\b|ahụ|ọ bụ)\b/.test(m) || // Igbo
+    /\b(kaabọ|ese\b|jọwọ|ẹkáàbọ̀|e kaabo|e se|ẹ jẹ|mo fẹ|kini)\b/.test(m) || // Yoruba
+    /\b(sannu|yauwa|nagode|ranka|kai\b|ya dai|don allah|kai tsaye|bari)\b/.test(m)    // Hausa
+  );
+}
+
+/**
+ * Detects the primary language of a message when it appears to be non-English.
+ * Only calls the LLM when `hasForeignLanguageTrigger` is true first.
+ * Returns null when the message is English (or detection is uncertain).
+ */
+export async function detectMessageLanguage(message: string): Promise<DetectedLanguage> {
+  if (!hasForeignLanguageTrigger(message)) return null;
+
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 10,
+      system:
+        `Detect the primary language of this WhatsApp message.\n` +
+        `Reply with EXACTLY ONE token:\n` +
+        `pid  → Nigerian Pidgin English\n` +
+        `ig   → Igbo\n` +
+        `yo   → Yoruba\n` +
+        `ha   → Hausa\n` +
+        `en   → English (or unclear)\n` +
+        `Only the token — nothing else.`,
+      messages: [{ role: 'user', content: message }],
+    });
+    const raw = response.content[0];
+    if (raw.type !== 'text') return null;
+    const lang = raw.text.trim().toLowerCase();
+    if (lang === 'pid' || lang === 'ig' || lang === 'yo' || lang === 'ha') return lang;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Subset of vendor fields used for context-aware LLM responses */
 export interface VendorContext {
   businessContext?: string | null;
