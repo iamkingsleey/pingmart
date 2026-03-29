@@ -17,7 +17,9 @@ import { orderRepository } from '../../repositories/order.repository';
 import { customerRepository } from '../../repositories/customer.repository';
 import { productRepository } from '../../repositories/product.repository';
 import { vendorRepository } from '../../repositories/vendor.repository';
-import { initializeTransaction } from '../payment/paystack.service';
+import { initializeTransaction, createDedicatedVirtualAccount } from '../payment/paystack.service';
+import { decryptBankAccount } from '../../utils/crypto';
+import { env } from '../../config/env';
 import {
   msgPhysicalPaymentLink,
   msgDigitalPaymentLink,
@@ -27,7 +29,15 @@ import {
   msgPhysicalWelcome,
   msgDigitalWelcome,
   msgAskQuantity,
+  msgPayWithTransferDetails,
+  msgBankTransferInstructions,
+  msgVendorBankTransferClaim,
+  msgDeliveryOrPickup,
+  msgPickupLocationList,
+  msgPickupLocationConfirmed,
 } from '../whatsapp/templates';
+import { pickupLocationRepository } from '../../repositories/pickupLocation.repository';
+import { paymentTimeoutQueue } from '../../queues/paymentTimeout.queue';
 import {
   handleIdle,
   handleBrowsing,
@@ -254,6 +264,87 @@ export async function processIncomingMessage(
       // Any other reply: clear the flag and continue normal processing
       currentData = { ...currentData, awaitingReorderConfirmation: undefined };
       await sessionRepository.upsert(from, vendor.id, currentState, currentData);
+    }
+
+    // ── Delivery / Pickup choice (shown after cart confirmed) ─────────────────
+    if (currentData.awaitingDeliveryChoice) {
+      const upper = rawMessage.trim().toUpperCase();
+      if (upper === 'DELIVERY') {
+        const newData: SessionData = { ...currentData, awaitingDeliveryChoice: undefined, deliveryType: 'delivery' };
+        await sessionRepository.upsert(from, vendor.id, ConversationState.AWAITING_PAYMENT, newData);
+        await createOrderAndInitiatePayment(customer.id, vendor, newData, from, language);
+        return;
+      }
+      if (upper === 'PICKUP') {
+        const locations = await pickupLocationRepository.findActiveByVendor(vendor.id);
+        if (!locations.length) {
+          const newData: SessionData = { ...currentData, awaitingDeliveryChoice: undefined, deliveryType: 'delivery' };
+          await sessionRepository.upsert(from, vendor.id, ConversationState.AWAITING_PAYMENT, newData);
+          await enqueue(from, `Sorry, no pickup locations are available right now. We'll deliver to you instead! 🚚`);
+          await createOrderAndInitiatePayment(customer.id, vendor, newData, from, language);
+          return;
+        }
+        if (locations.length === 1) {
+          const loc = locations[0]!;
+          const addr = loc.landmark ? `${loc.address} (${loc.landmark})` : loc.address;
+          await enqueue(from, msgPickupLocationConfirmed(loc.name, addr, language));
+          const newData: SessionData = { ...currentData, awaitingDeliveryChoice: undefined, deliveryType: 'pickup', selectedPickupLocationId: loc.id };
+          await sessionRepository.upsert(from, vendor.id, ConversationState.AWAITING_PAYMENT, newData);
+          await createOrderAndInitiatePayment(customer.id, vendor, newData, from, language);
+          return;
+        }
+        // Multiple locations — show list
+        const { message: listMsg, sections } = msgPickupLocationList(locations);
+        await enqueueList(from, listMsg, sections, '📍 Choose Location');
+        const newData: SessionData = { ...currentData, awaitingDeliveryChoice: undefined, awaitingPickupChoice: true };
+        await sessionRepository.upsert(from, vendor.id, ConversationState.AWAITING_PAYMENT, newData);
+        await scheduleSessionTimeout(from, vendor.id, ConversationState.AWAITING_PAYMENT, newData);
+        return;
+      }
+      // Unrecognised reply — re-prompt
+      const { message: delivMsg, buttons: delivButtons } = msgDeliveryOrPickup(language);
+      await enqueueButtons(from, delivMsg, delivButtons);
+      return;
+    }
+
+    // ── Pickup location selection ─────────────────────────────────────────────
+    if (currentData.awaitingPickupChoice) {
+      // Payload is "PICKUP_LOC:<uuid>" from the list message
+      const pickupMatch = rawMessage.trim().match(/^PICKUP_LOC:(.+)$/i);
+      if (pickupMatch) {
+        const locationId = pickupMatch[1]!;
+        const loc = await pickupLocationRepository.findById(locationId);
+        if (loc && loc.vendorId === vendor.id) {
+          const addr = loc.landmark ? `${loc.address} (${loc.landmark})` : loc.address;
+          await enqueue(from, msgPickupLocationConfirmed(loc.name, addr, language));
+          const newData: SessionData = { ...currentData, awaitingPickupChoice: undefined, deliveryType: 'pickup', selectedPickupLocationId: locationId };
+          await sessionRepository.upsert(from, vendor.id, ConversationState.AWAITING_PAYMENT, newData);
+          await createOrderAndInitiatePayment(customer.id, vendor, newData, from, language);
+          return;
+        }
+      }
+      // Invalid selection — re-prompt
+      const locations = await pickupLocationRepository.findActiveByVendor(vendor.id);
+      const { message: listMsg, sections } = msgPickupLocationList(locations);
+      await enqueueList(from, listMsg, sections, '📍 Choose Location');
+      return;
+    }
+
+    // ── Customer PAID command — bank transfer claim ────────────────────────────
+    if (rawMessage.trim().toUpperCase() === 'PAID' && currentState === ConversationState.AWAITING_PAYMENT) {
+      // Find the most recent PAYMENT_PENDING bank-transfer order for this customer/vendor
+      const lastOrder = await orderRepository.findLast(customer.id, vendor.id);
+      if (lastOrder && lastOrder.status === 'PAYMENT_PENDING' && lastOrder.paymentMethod === 'bank_transfer') {
+        const orderDetail = await orderRepository.findByIdWithDetails(lastOrder.id);
+        if (orderDetail) {
+          const { message: claimMsg, buttons: claimButtons } = msgVendorBankTransferClaim(orderDetail);
+          await notifyVendorNumbers(vendor.id, vendor.whatsappNumber, claimMsg, claimButtons);
+          await enqueue(from, `✅ Got it! We've notified *${vendor.businessName}* to confirm your payment. We'll update you shortly. 🙏`);
+          logger.info('Bank transfer claim sent to vendor', { orderId: lastOrder.id, customer: maskPhone(from) });
+          return;
+        }
+      }
+      // No matching order — let the state machine handle it
     }
 
     // ── Affirmative reply after not-found: "yes" → show menu ─────────────────
@@ -737,6 +828,44 @@ export async function processIncomingMessage(
     await scheduleSessionTimeout(from, vendor.id, result.nextState, result.nextData);
 
     if (result.shouldCreateOrder) {
+      // For physical orders: if vendor has pickup available, ask customer first
+      if (result.nextData.activeOrderType !== OrderType.DIGITAL && !result.nextData.deliveryType) {
+        const vendorDeliveryOptions = (vendor as typeof vendor & { deliveryOptions?: string }).deliveryOptions ?? 'delivery';
+        if (vendorDeliveryOptions === 'both') {
+          const { message: delivMsg, buttons: delivButtons } = msgDeliveryOrPickup(language);
+          await enqueueButtons(from, delivMsg, delivButtons);
+          await sessionRepository.upsert(from, vendor.id, ConversationState.AWAITING_PAYMENT, {
+            ...result.nextData,
+            awaitingDeliveryChoice: true,
+          });
+          await scheduleSessionTimeout(from, vendor.id, ConversationState.AWAITING_PAYMENT, result.nextData);
+          return;
+        } else if (vendorDeliveryOptions === 'pickup') {
+          // Pickup only — show locations directly
+          const locations = await pickupLocationRepository.findActiveByVendor(vendor.id);
+          if (locations.length === 1) {
+            const loc = locations[0]!;
+            const addr = loc.landmark ? `${loc.address} (${loc.landmark})` : loc.address;
+            await enqueue(from, msgPickupLocationConfirmed(loc.name, addr, language));
+            await sessionRepository.upsert(from, vendor.id, ConversationState.AWAITING_PAYMENT, {
+              ...result.nextData,
+              deliveryType: 'pickup',
+              selectedPickupLocationId: loc.id,
+            });
+            await createOrderAndInitiatePayment(customer.id, vendor, { ...result.nextData, deliveryType: 'pickup', selectedPickupLocationId: loc.id }, from, language);
+            return;
+          }
+          const { message: listMsg, sections } = msgPickupLocationList(locations);
+          await enqueueList(from, listMsg, sections, '📍 Choose Location');
+          await sessionRepository.upsert(from, vendor.id, ConversationState.AWAITING_PAYMENT, {
+            ...result.nextData,
+            awaitingPickupChoice: true,
+          });
+          await scheduleSessionTimeout(from, vendor.id, ConversationState.AWAITING_PAYMENT, result.nextData);
+          return;
+        }
+        // deliveryOptions === 'delivery' — fall through to normal flow
+      }
       await createOrderAndInitiatePayment(customer.id, vendor, result.nextData, from, language);
     }
   } catch (err) {
@@ -862,18 +991,54 @@ async function createOrderAndInitiatePayment(
   const totalAmount = calculateCartTotal(cart);
   const reference = generatePaystackReference();
 
+  // ── Determine payment method ───────────────────────────────────────────────
+  // Digital orders always go through Paystack link (can't do bank transfer for instant delivery).
+  // Physical: prefer paystack_transfer if vendor has a Paystack key; otherwise bank_transfer.
+  let paymentMethod = sessionData.chosenPaymentMethod;
+  if (!paymentMethod) {
+    if (orderType === OrderType.DIGITAL) {
+      paymentMethod = 'paystack_link';
+    } else if (vendor.paystackSecretKey && vendor.acceptedPayments !== 'bank') {
+      paymentMethod = 'paystack_transfer';
+    } else if (vendor.bankAccountNumber) {
+      paymentMethod = 'bank_transfer';
+    } else {
+      paymentMethod = 'paystack_link'; // fallback
+    }
+  }
+
+  // ── Delivery type ──────────────────────────────────────────────────────────
+  const deliveryType = sessionData.deliveryType ?? 'delivery';
+  const pickupLocationId = sessionData.selectedPickupLocationId ?? undefined;
+
   const order = await orderRepository.create({
     vendorId: vendor.id,
     customerId,
     orderType,
     cart,
     totalAmount,
-    deliveryAddress: deliveryAddress ?? undefined,
+    deliveryAddress: deliveryType === 'delivery' ? (deliveryAddress ?? undefined) : undefined,
     paystackReference: reference,
+    paymentMethod,
+    deliveryType,
+    pickupLocationId,
   });
 
-  logger.info('Order created', { orderId: order.id, orderType, reference: maskReference(reference) });
+  logger.info('Order created', { orderId: order.id, orderType, paymentMethod, reference: maskReference(reference) });
 
+  // ── Route payment by method ────────────────────────────────────────────────
+
+  if (paymentMethod === 'bank_transfer') {
+    await handleBankTransferCheckout(order, vendor, customerPhone, totalAmount, language);
+    return;
+  }
+
+  if (paymentMethod === 'paystack_transfer' && vendor.paystackSecretKey) {
+    await handlePaystackTransferCheckout(order, vendor, customerPhone, totalAmount, language);
+    return;
+  }
+
+  // Default: Paystack payment link
   const placeholderEmail = `${customerPhone.replace('+', '')}@orb.placeholder.com`;
   const paymentUrl = await initializeTransaction(placeholderEmail, totalAmount, reference, {
     orderId: order.id,
@@ -889,6 +1054,83 @@ async function createOrderAndInitiatePayment(
   }
 
   logger.info('Payment link sent', { orderId: order.id, reference: maskReference(reference) });
+}
+
+// ─── Paystack Pay with Transfer ───────────────────────────────────────────────
+
+async function handlePaystackTransferCheckout(
+  order: import('../../repositories/order.repository').Order,
+  vendor: Vendor,
+  customerPhone: string,
+  totalAmount: number,
+  language: Language,
+): Promise<void> {
+  try {
+    const decryptedKey = decryptBankAccount(vendor.paystackSecretKey!, env.ENCRYPTION_KEY);
+    const { bankName, accountNumber } = await createDedicatedVirtualAccount(decryptedKey, customerPhone, order.id);
+
+    // Persist virtual account details on the order
+    const expiry = new Date(Date.now() + 30 * 60 * 1000);
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        virtualBankName: bankName,
+        virtualAccountNumber: accountNumber,
+        virtualAccountExpiry: expiry,
+        status: 'PAYMENT_PENDING',
+      },
+    });
+
+    // Schedule 30-minute expiry job
+    await paymentTimeoutQueue.add(
+      { orderId: order.id, customerPhone, vendorId: vendor.id, language },
+      { delay: 30 * 60 * 1000, jobId: `pay-timeout:${order.id}`, removeOnComplete: true },
+    );
+
+    await enqueue(customerPhone, msgPayWithTransferDetails(bankName, accountNumber, totalAmount, order.id, 30, language));
+    logger.info('Virtual account issued', { orderId: order.id, customer: maskPhone(customerPhone) });
+  } catch (err) {
+    // Virtual account creation failed — fall back to Paystack link
+    logger.error('Virtual account creation failed — falling back to link', {
+      orderId: order.id,
+      error: (err as Error).message,
+    });
+    const placeholderEmail = `${customerPhone.replace('+', '')}@orb.placeholder.com`;
+    const paymentUrl = await initializeTransaction(placeholderEmail, totalAmount, order.paystackReference, {
+      orderId: order.id,
+      vendorId: vendor.id,
+    });
+    await enqueue(customerPhone, msgPhysicalPaymentLink(paymentUrl, totalAmount, order.id, language));
+  }
+}
+
+// ─── Manual Bank Transfer Checkout ───────────────────────────────────────────
+
+async function handleBankTransferCheckout(
+  order: import('../../repositories/order.repository').Order,
+  vendor: Vendor,
+  customerPhone: string,
+  totalAmount: number,
+  language: Language,
+): Promise<void> {
+  const accountNumber = decryptBankAccount(vendor.bankAccountNumber!, env.ENCRYPTION_KEY);
+
+  // Mark order as PAYMENT_PENDING
+  await prisma.order.update({ where: { id: order.id }, data: { status: 'PAYMENT_PENDING' } });
+
+  await enqueue(
+    customerPhone,
+    msgBankTransferInstructions(
+      vendor.bankName ?? 'Our Bank',
+      accountNumber,
+      vendor.bankAccountName ?? 'Store Account',
+      totalAmount,
+      order.id,
+      language,
+    ),
+  );
+
+  logger.info('Bank transfer instructions sent', { orderId: order.id, customer: maskPhone(customerPhone) });
 }
 
 // ─── Payment Confirmed Handler ────────────────────────────────────────────────
@@ -916,7 +1158,7 @@ export async function handlePaymentConfirmed(paystackReference: string): Promise
   if (order.orderType === 'DIGITAL') {
     await handleDigitalPaymentConfirmed(orderDetail, vendor.whatsappNumber, customerPhone, language);
   } else {
-    await handlePhysicalPaymentConfirmed(orderDetail, vendor, customerPhone, language);
+    await handlePhysicalPaymentConfirmed(orderDetail, vendor, customerPhone, language, order.status === 'PAID');
   }
 
   // Update VendorCustomer analytics — increment order count and record last order time
@@ -936,6 +1178,7 @@ async function handlePhysicalPaymentConfirmed(
   vendor: Vendor,
   customerPhone: string,
   language: Language,
+  isBankTransfer = false,
 ): Promise<void> {
   const cart = order.orderItems.map((oi) => ({
     productId: oi.productId,
@@ -946,7 +1189,12 @@ async function handlePhysicalPaymentConfirmed(
   }));
 
   await enqueue(customerPhone, msgPhysicalOrderConfirmedCustomer(order.id, vendor.businessName, cart, language));
-  await notifyVendorNumbers(vendor.id, vendor.whatsappNumber, msgNewPhysicalOrder(order), [
+
+  // Build vendor notification — if bank transfer, include payment-confirmed note
+  const vendorNote = isBankTransfer ? `\n\n💳 *Payment method:* Bank transfer (confirmed)` : '';
+  const vendorMsg = msgNewPhysicalOrder(order) + vendorNote;
+
+  await notifyVendorNumbers(vendor.id, vendor.whatsappNumber, vendorMsg, [
     { id: `CONFIRM ${formatOrderId(order.id)}`, title: '✅ Confirm' },
     { id: `REJECT ${formatOrderId(order.id)}`,  title: '❌ Reject' },
     { id: `CONTACT ${formatOrderId(order.id)}`, title: '📞 Contact Customer' },

@@ -1,115 +1,143 @@
 # Payment Handler Skill — Pingmart
 
 ## Overview
-Pingmart supports two payment methods: Paystack (card/bank transfer via Paystack) and direct bank transfer. Each vendor can accept one or both. Payment logic must be secure, atomic, and never expose sensitive data.
+Pingmart supports three payment methods: Paystack Pay with Transfer (virtual account), Paystack Link (card), and manual Bank Transfer. Each vendor chooses their preferred method during onboarding. Payment logic is secure, atomic, and never exposes sensitive data.
 
-## File Location
-`src/services/payment/` — payment service logic
-`src/webhooks/paystack.webhook.ts` — Paystack webhook handler
-`src/repositories/order.repository.ts` — order status updates
+## File Locations
+- `src/services/payment/paystack.service.ts` — Paystack API calls (initialize, verify, createDedicatedVirtualAccount)
+- `src/webhooks/paystack.webhook.ts` — Paystack webhook handler
+- `src/repositories/order.repository.ts` — order status updates
+- `src/queues/paymentTimeout.queue.ts` — 30-min virtual account expiry queue
+- `src/queues/workers/paymentTimeout.worker.ts` — expiry job processor
+- `src/services/delivery/physicalDelivery.service.ts` — vendor CONFIRM_BANK / REJECT_BANK commands
 
 ## Payment Methods
 
-### 1. Paystack
-Vendors provide their own `sk_live_` or `sk_test_` key during onboarding.
-- Stored AES-256-GCM encrypted in `vendor.paystackSecretKey`
-- Decrypt at runtime, use to initialize Paystack transaction
-- Each transaction is tied to a specific order ID
-- Payment confirmed via Paystack webhook (NOT by trusting client response)
+### 1. Paystack Pay with Transfer (Virtual Account) — `paystack_transfer`
+Vendor uses their Paystack secret key. Each order gets a dedicated virtual bank account.
 
 **Flow:**
 ```
-Generate payment link → Customer pays → Paystack webhook fires →
-Verify signature → Update order status → Notify vendor + customer
+Cart confirmed → createDedicatedVirtualAccount() → Store account on Order →
+Send msgPayWithTransferDetails to customer → Schedule 30-min timeout job →
+Paystack webhook fires (channel: dedicated_nuban) → findByVirtualAccount() →
+markPaymentProcessed() → enqueue payment job → handlePaymentConfirmed()
 ```
 
-**Never confirm payment without webhook verification.** Customers can forge redirect URLs.
+**Timeout flow:**
+```
+30 minutes elapse, no payment → paymentTimeout worker fires →
+expirePaymentPending() → order → EXPIRED → msgTransferPaymentExpired (with buttons)
+```
 
-### 2. Direct Bank Transfer
-Vendor provides: bank name, account number, account name.
-- Account number stored AES-256-GCM encrypted in `vendor.bankAccountNumber`
-- Displayed to customer at checkout (decrypted at display time)
-- Payment confirmation is MANUAL — vendor must confirm receipt
+**Key point:** The `dedicated_nuban` webhook does NOT include our `paystackReference`. Look up the order via `virtualAccountNumber` instead.
+
+### 2. Paystack Link (card / regular bank transfer) — `paystack_link`
+Used for digital products and as fallback if virtual account creation fails.
 
 **Flow:**
 ```
-Show bank details to customer → Customer transfers → Customer notifies bot →
-Bot notifies vendor → Vendor confirms via CONFIRM-{orderID} reply
+initializeTransaction() → Send payment URL → Customer pays →
+Paystack webhook fires (charge.success, standard channel) →
+findByPaystackReference() → markPaymentProcessed() → handlePaymentConfirmed()
 ```
+
+### 3. Manual Bank Transfer — `bank_transfer`
+Vendor provides bank name, account number (AES-256-GCM encrypted), account name.
+
+**Flow:**
+```
+Cart confirmed → Decrypt account number → msgBankTransferInstructions → order → PAYMENT_PENDING →
+Customer transfers, replies PAID → Bot notifies vendor with CONFIRM/REJECT buttons (msgVendorBankTransferClaim) →
+Vendor replies CONFIRM_BANK ORD-XXXXX → markBankTransferPaid() → handlePaymentConfirmed() →
+OR vendor replies REJECT_BANK ORD-XXXXX → rejectBankTransfer() → msgBankTransferRejected → customer
+```
+
+**Vendor commands:**
+- `CONFIRM_BANK ORD-XXXXXX` → confirms payment received
+- `REJECT_BANK ORD-XXXXXX` → rejects payment claim
+
+## Payment Method Selection Logic (order.service.ts)
+```typescript
+// Digital orders always use paystack_link
+if (orderType === DIGITAL) → 'paystack_link'
+
+// Physical: prefer paystack_transfer if vendor has Paystack key
+else if (vendor.paystackSecretKey && vendor.acceptedPayments !== 'bank') → 'paystack_transfer'
+else if (vendor.bankAccountNumber) → 'bank_transfer'
+else → 'paystack_link' // fallback
+```
+
+## Vendor Onboarding — Payment Setup
+During onboarding (PAYMENT_SETUP step), vendor is shown Reply Buttons:
+- ⚡ Paystack Transfer → asks for `sk_live_` / `sk_test_` key
+- 🏦 Bank Transfer → asks for `Bank Name | Account Number | Account Name`
+
+Button IDs: `PAYMENT_METHOD:paystack_transfer` and `PAYMENT_METHOD:bank_transfer`
 
 ## Paystack Webhook Verification
-ALWAYS verify the `x-paystack-signature` header before processing:
-
+ALWAYS verify `x-paystack-signature` before processing:
 ```typescript
 import crypto from 'crypto';
-
-function verifyPaystackSignature(payload: string, signature: string, secret: string): boolean {
-  const hash = crypto
-    .createHmac('sha512', secret)
-    .update(payload)
-    .digest('hex');
+function verifyPaystackSignature(payload: Buffer, signature: string, secret: string): boolean {
+  const hash = crypto.createHmac('sha512', secret).update(payload).digest('hex');
   return hash === signature;
 }
 ```
+Reject any webhook that fails with 401.
 
-Reject any webhook that fails signature verification with 400. Log the attempt.
+## Dedicated Account Lookup
+```typescript
+// For dedicated_nuban webhooks (no reference in payload):
+const accountNumber = payload.data.authorization?.receiver_bank_account_number;
+const order = await orderRepository.findByVirtualAccount(accountNumber);
+```
 
 ## Encryption / Decryption
-All sensitive payment data uses AES-256-GCM:
-
-```typescript
-// File: src/utils/crypto.ts
-// Key loaded from ENCRYPTION_KEY env variable (64-char hex = 32 bytes)
-
-export function encryptBankAccount(plaintext: string): string { ... }
-export function decryptBankAccount(ciphertext: string): string { ... }
-```
+All sensitive payment data uses AES-256-GCM (`src/utils/crypto.ts`):
+- `encryptBankAccount(plaintext, keyHex)` → `iv:authTag:ciphertext`
+- `decryptBankAccount(encrypted, keyHex)` → plaintext
 
 **Rules:**
 - Encrypt BEFORE saving to DB
-- Decrypt ONLY at the moment of display — never store decrypted value in memory longer than needed
-- Never log decrypted payment data
+- Decrypt ONLY at display time — never log decrypted values
 - Never return decrypted account numbers in API responses
 
 ## Order Status Lifecycle
 ```
-PENDING → PAYMENT_PENDING → PAID → CONFIRMED → COMPLETED
-                         ↓
-                      CANCELLED / REJECTED
+PENDING_PAYMENT   → Order created (default)
+PAYMENT_PENDING   → Virtual account / bank transfer setup, awaiting payment
+PAID              → Bank transfer confirmed by vendor
+PAYMENT_CONFIRMED → Paystack webhook confirmed (card/link payments)
+CONFIRMED         → Vendor accepted the order
+PREPARING         → Vendor is preparing
+READY             → Ready for pickup/delivery
+OUT_FOR_DELIVERY  → On the way
+DELIVERED         → Physically delivered
+DIGITAL_SENT      → Digital product sent
+CANCELLED         → Cancelled
+EXPIRED           → 30-min virtual account window elapsed
+REJECTED          → Vendor rejected bank transfer claim
 ```
-
-Status transitions must be atomic DB updates with timestamp logging.
-
-## Adding a New Payment Method (e.g. Flutterwave)
-1. Add `flutterwaveSecretKey` field to Vendor model in Prisma schema
-2. Add `flutterwave` as an option in `acceptedPayments` field
-3. Encrypt key same way as Paystack key
-4. Add Flutterwave webhook handler at `/webhooks/flutterwave`
-5. Add signature verification before any processing
-6. Update vendor onboarding PAYMENT_SETUP step to offer Flutterwave
-7. Update the `payment-handler` SKILL.md with new method details
-
-## Refund Handling
-Refunds are currently manual (vendor-initiated). If a refund is requested:
-1. Vendor or admin triggers refund via Paystack dashboard directly
-2. Bot does not handle refunds automatically yet
-3. Log refund requests in the Order record as a note
-
-## Nigerian Bank Codes Reference
-Common Nigerian banks for bank transfer setup:
-- GTBank: 058
-- Access Bank: 044
-- Zenith Bank: 057
-- First Bank: 011
-- UBA: 033
-- Kuda: 090267
-- OPay: 100004
-- Moniepoint: 100022
 
 ## Security Checklist Before Touching Payment Code
 - [ ] Secrets loaded from env variables only — never hardcoded
-- [ ] Webhook signature verified before processing
-- [ ] All financial data encrypted at rest
-- [ ] No sensitive data in logs
-- [ ] Order totals calculated server-side — never trust client-submitted amounts
-- [ ] Payment status updated only after webhook confirmation — never on redirect
+- [ ] Webhook signature verified before any processing
+- [ ] All financial data encrypted at rest (AES-256-GCM)
+- [ ] No sensitive data in logs (use maskPhone, maskReference)
+- [ ] Order totals calculated server-side — never trust client amounts
+- [ ] Payment status updated only after webhook/vendor confirmation
+- [ ] Idempotency guard (markPaymentProcessed) prevents double-processing
+
+## Nigerian Bank Codes Reference
+- GTBank: 058 | Access Bank: 044 | Zenith Bank: 057 | First Bank: 011
+- UBA: 033 | Kuda: 090267 | OPay: 100004 | Moniepoint: 100022
+
+## Paystack Test Mode Guide
+1. Use `sk_test_*` key during onboarding
+2. For virtual account: preferred_bank is automatically set to `test-bank` for test keys
+3. Use Paystack Transfer Simulator: Dashboard → Tools → Transfer Simulator
+4. Test `charge.success` webhook: Dashboard → API & Webhooks → Send Test Event
+5. For `dedicated_nuban` channel: use Transfer Simulator → pick the virtual account number
+6. Verify webhook locally with ngrok: `ngrok http 3001` then set webhook URL in Paystack Dashboard
+7. Check signature with PAYSTACK_WEBHOOK_SECRET from your .env (separate from secret key)

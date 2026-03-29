@@ -49,6 +49,10 @@ model Vendor {
   welcomeMessage String?          // custom greeting override
   isPaused     Boolean  @default(false)     // vendor can pause/resume store
 
+  // ── v2: Delivery options ─────────────────────────────────────────────
+  // 'delivery' | 'pickup' | 'both' — controls checkout flow
+  deliveryOptions    String   @default("delivery")
+
   // ── v2: Payment ───────────────────────────────────────────────────────
   paystackSecretKey  String?  // AES-256-GCM encrypted at rest
   bankName           String?
@@ -77,6 +81,7 @@ model Vendor {
   customers            VendorCustomer[]
   notificationNumbers  VendorNotificationNumber[]
   setupSession         VendorSetupSession?
+  pickupLocations      PickupLocation[]
 
   @@map("vendors")
 }
@@ -175,8 +180,12 @@ model Order {
   status            OrderStatus @default(PENDING_PAYMENT)
   // Total amount in kobo
   totalAmount       Int
-  // Physical orders only — null for digital
+  // 'delivery' | 'pickup' — set at checkout
+  deliveryType      String?
+  // Home delivery orders only — null for pickup/digital
   deliveryAddress   String?
+  // Pickup orders only — FK to vendor's PickupLocation
+  pickupLocationId  String?
   notes             String?
   // Unique Paystack reference — used for idempotent webhook processing
   paystackReference String      @unique
@@ -188,12 +197,19 @@ model Order {
   deliveredAt       DateTime?
   // Timestamp when a re-order nudge was sent — prevents duplicate nudges
   reorderSentAt     DateTime?
+  // Payment method chosen at checkout: paystack_transfer | bank_transfer
+  paymentMethod     String?
+  // Dedicated virtual account assigned for Paystack Pay with Transfer
+  virtualBankName      String?
+  virtualAccountNumber String?
+  virtualAccountExpiry DateTime?
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
-  vendor     Vendor      @relation(fields: [vendorId], references: [id])
-  customer   Customer    @relation(fields: [customerId], references: [id])
-  orderItems OrderItem[]
+  vendor         Vendor          @relation(fields: [vendorId], references: [id])
+  customer       Customer        @relation(fields: [customerId], references: [id])
+  orderItems     OrderItem[]
+  pickupLocation PickupLocation? @relation(fields: [pickupLocationId], references: [id])
 
   @@index([vendorId])
   @@index([customerId])
@@ -275,7 +291,9 @@ enum OrderType {
 
 enum OrderStatus {
   PENDING_PAYMENT   // v1: Order created, awaiting payment
+  PAYMENT_PENDING   // v2: Virtual account / bank transfer created, waiting for payment
   PAYMENT_CONFIRMED // v1: Paystack confirmed payment
+  PAID              // v2: Payment received and verified
   CONFIRMED         // Vendor confirmed the order (physical only)
   PREPARING         // Vendor is preparing the order (physical only)
   READY             // v1: Order ready for pickup/delivery
@@ -283,6 +301,8 @@ enum OrderStatus {
   DELIVERED         // Physical order delivered
   DIGITAL_SENT      // Digital product delivered to customer
   CANCELLED         // Order cancelled (by vendor or system)
+  EXPIRED           // v2: Payment window elapsed with no payment
+  REJECTED          // v2: Vendor rejected a manual bank transfer claim
 }
 
 enum ConversationState {
@@ -330,6 +350,31 @@ model VendorSetupSession {
   updatedAt     DateTime  @updatedAt
 
   @@map("vendor_setup_sessions")
+}
+
+// ─── v2: PickupLocation ───────────────────────────────────────────────────────
+// Vendor-configured physical collection points. Customers choose one at checkout
+// when the vendor's deliveryOptions includes 'pickup'.
+
+model PickupLocation {
+  id         String   @id @default(uuid())
+  vendorId   String
+  vendor     Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  name       String
+  address    String
+  landmark   String?
+  city       String
+  state      String
+  hoursStart String?
+  hoursEnd   String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  orders Order[]
+
+  @@index([vendorId, isActive])
+  @@map("pickup_locations")
 }
 
 // ─── v2: VendorNotificationNumber ────────────────────────────────────────────

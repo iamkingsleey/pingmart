@@ -32,13 +32,17 @@ export enum OrderType {
 
 export enum OrderStatus {
   PENDING_PAYMENT = 'PENDING_PAYMENT',
+  PAYMENT_PENDING = 'PAYMENT_PENDING',
   PAYMENT_CONFIRMED = 'PAYMENT_CONFIRMED',
+  PAID = 'PAID',
   CONFIRMED = 'CONFIRMED',
   PREPARING = 'PREPARING',
   READY = 'READY',
   DELIVERED = 'DELIVERED',
   DIGITAL_SENT = 'DIGITAL_SENT',
   CANCELLED = 'CANCELLED',
+  EXPIRED = 'EXPIRED',
+  REJECTED = 'REJECTED',
 }
 
 // ─── Conversation State Machine ───────────────────────────────────────────────
@@ -117,6 +121,20 @@ export interface SessionData {
    * Reset to 0 on any non-UNKNOWN intent.
    */
   consecutiveUnknownCount?: number;
+
+  // ── Delivery / Pickup flow ────────────────────────────────────────────────
+  /** 'delivery' | 'pickup' — chosen at checkout */
+  deliveryType?: 'delivery' | 'pickup';
+  /** Set while waiting for customer to choose delivery or pickup */
+  awaitingDeliveryChoice?: boolean;
+  /** Set while waiting for customer to select a pickup location from the list */
+  awaitingPickupChoice?: boolean;
+  /** ID of the PickupLocation the customer selected */
+  selectedPickupLocationId?: string;
+
+  // ── Payment method flow ───────────────────────────────────────────────────
+  /** 'paystack_transfer' | 'bank_transfer' — chosen or defaulted at checkout */
+  chosenPaymentMethod?: string;
 }
 
 // ─── API Contracts ────────────────────────────────────────────────────────────

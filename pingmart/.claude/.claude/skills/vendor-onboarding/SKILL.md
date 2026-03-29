@@ -58,19 +58,28 @@ Type "DONE" to finish adding products and advance to PAYMENT_SETUP.
 
 ### PAYMENT_SETUP — Critical Rules
 
-**ALWAYS run LLM intent check before format validation in this step.**
+**Step 1: Always show Reply Buttons first.** Do NOT use the COLLECTING_INFO paymentMethod to skip this.
+
+Send Reply Buttons:
+```
+⚡ Paystack Transfer | 🏦 Bank Transfer
+```
+Button IDs: `PAYMENT_METHOD:paystack_transfer` | `PAYMENT_METHOD:bank_transfer`
+
+**Step 2: Route based on button press:**
+- `PAYMENT_METHOD:paystack_transfer` → ask for `sk_live_` / `sk_test_` key
+- `PAYMENT_METHOD:bank_transfer` → ask for `Bank Name | Account Number | Account Name`
+
+**ALWAYS run LLM intent check before Paystack key format validation.**
 
 Classify vendor input as one of:
-- `PROVIDING_PAYSTACK_KEY` — starts with sk_live_ or sk_test_
+- `PROVIDING_KEY` — starts with sk_live_ or sk_test_
 - `SKIP_PAYSTACK` — "ignore paystack", "bank transfer only", "I don't use paystack"
-- `PROVIDING_BANK_DETAILS` — bank name + account number mentioned
 - `ASKING_HELP` — confused, asking what Paystack is
 
-If `SKIP_PAYSTACK`:
-- Set `paymentMethod: 'bank_transfer'` on vendor
-- Skip Paystack step entirely
-- Reply: "No problem! We'll use bank transfer only. Your customers will see your bank details at checkout. ✅"
-- Advance to collecting bank details
+If `SKIP_PAYSTACK` after choosing Paystack:
+- Reply: "No problem! We'll use bank transfer only. ✅"
+- Ask for bank details
 
 **Paystack key stored AES-256-GCM encrypted** — never plaintext in DB.
 **Bank account number stored AES-256-GCM encrypted** — never plaintext in DB.

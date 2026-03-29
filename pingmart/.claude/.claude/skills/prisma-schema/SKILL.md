@@ -18,10 +18,42 @@ Pingmart uses PostgreSQL via Prisma ORM. The schema supports multi-tenant vendor
 | `Product` | Item in a vendor's catalog |
 | `Order` | A confirmed purchase |
 | `OrderItem` | Line items within an order |
+| `PickupLocation` | Vendor's physical collection branches |
 | `ConversationSession` | Bot state per customer per vendor |
 | `VendorSetupSession` | Vendor onboarding state |
 | `VendorNotificationNumber` | Additional numbers that receive order alerts |
 | `OffHoursContact` | Customers who messaged outside working hours |
+
+## Key New Fields (migration 20260329)
+
+**Order:**
+- `paymentMethod String?` — 'paystack_transfer' | 'bank_transfer' | 'paystack_link'
+- `virtualBankName / virtualAccountNumber / virtualAccountExpiry` — for Paystack Pay with Transfer
+- `deliveryType String?` — 'delivery' | 'pickup'
+- `pickupLocationId String?` — FK to PickupLocation
+
+**Vendor:**
+- `deliveryOptions String` — 'delivery' | 'pickup' | 'both' (default: 'delivery')
+
+**OrderStatus enum new values:** `PAYMENT_PENDING`, `PAID`, `EXPIRED`, `REJECTED`
+
+**PickupLocation model:**
+```prisma
+model PickupLocation {
+  id         String   @id @default(uuid())
+  vendorId   String
+  name       String
+  address    String
+  landmark   String?
+  city       String
+  state      String
+  hoursStart String?
+  hoursEnd   String?
+  isActive   Boolean  @default(true)
+  vendor     Vendor   @relation(...)
+  orders     Order[]
+}
+```
 
 ## Multi-Tenant Isolation Rules
 Every query that involves customer data MUST be scoped to a vendor:

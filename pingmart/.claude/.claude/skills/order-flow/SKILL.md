@@ -1,141 +1,140 @@
 # Order Flow Skill — Pingmart
 
 ## Overview
-The customer order flow is the core commerce journey — from landing on a vendor's store to receiving an order confirmation. It must be smooth, fast, and handle edge cases gracefully.
+The customer order flow is the core commerce journey — from landing on a vendor's store to receiving a payment-confirmed message. Supports physical, digital, and hybrid product types; three payment methods; and delivery or pickup at checkout.
 
-## File Location
-`src/services/router.service.ts` — state routing
-`src/repositories/order.repository.ts` — order persistence
-`src/services/whatsapp/templates.ts` — message templates
+## File Locations
+- `src/services/order/order.service.ts` — main message processor + order creation
+- `src/services/order/stateMachine.ts` — state transition handlers
+- `src/repositories/order.repository.ts` — order persistence
+- `src/services/whatsapp/templates.ts` — all message templates
+- `src/repositories/pickupLocation.repository.ts` — pickup branch data
 
 ## Full Customer Journey
 
+### Physical Orders
 ```
-Store link tap → LANGUAGE_SELECT → IDLE (store welcome) → BROWSING (menu)
-→ ORDERING (item + quantity) → CART_REVIEW → AWAITING_PAYMENT
-→ [Paystack: COMPLETE] or [Bank Transfer: AWAITING_TRANSFER_CONFIRMATION → COMPLETE]
+Store link tap → LANGUAGE_SELECT → IDLE → BROWSING (menu)
+→ ORDERING (item + quantity) → AWAITING_ITEM_NOTE? → AWAITING_ADDRESS
+→ [Delivery or Pickup choice if vendor has both] → AWAITING_PAYMENT
+→ [paystack_transfer: virtual account details + 30-min timeout]
+   OR [bank_transfer: bank details, customer sends PAID, vendor confirms]
+   OR [paystack_link: payment URL]
+→ Payment confirmed → Customer confirmation + Vendor notification → COMPLETED
 ```
 
-## State Handlers
+### Digital Orders
+```
+BROWSING → ORDERING (product detail) → AWAITING_PAYMENT → paystack_link payment URL
+→ Paystack webhook → Instant delivery → COMPLETED
+```
 
-### LANGUAGE_SELECT
-- Shown only on first ever message from this phone number
-- Display all 5 languages simultaneously
-- After selection, save `session.language` and proceed to store welcome
+## Delivery / Pickup Flow
+
+### After cart confirmation (AWAITING_ADDRESS → AWAITING_PAYMENT):
+- `vendor.deliveryOptions = 'delivery'` → skip choice, proceed to payment
+- `vendor.deliveryOptions = 'pickup'` → show location(s) directly
+- `vendor.deliveryOptions = 'both'` → show Reply Buttons: 🚚 Home Delivery | 📍 Pickup at Location
+
+### Pickup location selection:
+- 1 active location → confirm automatically
+- 2+ locations → WhatsApp List Message (id format: `PICKUP_LOC:<uuid>`)
+
+Session fields set during this flow:
+- `awaitingDeliveryChoice: true` while waiting for delivery/pickup choice
+- `awaitingPickupChoice: true` while waiting for location selection
+- `deliveryType: 'delivery' | 'pickup'`
+- `selectedPickupLocationId: string`
+
+## Freemium Pickup Location Limit
+```
+vendor.plan === 'free' → max 2 active pickup locations
+paid plans → unlimited
+```
+Enforce in pickup location management with `pickupLocationRepository.countActive()`.
+
+## Payment Method Routing (order.service.ts)
+```
+Digital order → always 'paystack_link'
+Physical + vendor.paystackSecretKey + acceptedPayments !== 'bank' → 'paystack_transfer'
+Physical + vendor.bankAccountNumber → 'bank_transfer'
+Fallback → 'paystack_link'
+```
+
+## State Handlers (stateMachine.ts)
 
 ### IDLE — Store Welcome
-When a customer first arrives at a vendor store (via store code):
-1. Show vendor's `welcomeMessage` (if set) or default greeting
-2. Show business hours (if outside hours, show off-hours message)
-3. Show menu summary (categories only, not full list)
-4. Prompt: "Reply MENU to browse or type what you want"
+1. Show vendor's `welcomeMessage` or default greeting
+2. Check business hours (off-hours = record + return hours message)
+3. Show menu summary grouped by category
 
 ### BROWSING — Menu Display
-Format menu grouped by category:
 ```
-🍽️ *Mama Tee's Kitchen*
-
-🍚 Rice Dishes
-1. Jollof Rice (Large) — ₦2,500
-2. Fried Rice — ₦2,500
-
-🍗 Proteins
-3. Grilled Chicken (Half) — ₦3,500
-
-🥤 Drinks
-4. Chapman (Large) — ₦800
-
-Type a number or product name to order
+🏷️ *Category*
+1. Product Name — ₦2,500
+   _description_
 ```
-
-- Products numbered sequentially across categories
-- Numbers are positional — do NOT use database IDs as display numbers
-- Keep menu under 4096 chars (WhatsApp limit). If over limit, paginate with "Reply MORE for more"
+Products numbered sequentially across categories.
 
 ### ORDERING — Item Selection
-When customer selects an item:
-1. Confirm the item name and price
-2. Ask for quantity: "How many would you like?"
-3. Optionally ask for special instructions if vendor has `specialInstructions` set
+1. Confirm item name + price
+2. Ask for quantity
+3. Ask for special instructions if `specialInstructions` set on vendor
 
-After quantity received:
-- Add to `session.cartItems`
-- Ask: "Anything else? Type MENU to add more or CART to review your order"
-- Do NOT auto-advance to cart review — let customer keep adding
-
-### CART_REVIEW
-Show full cart with line totals:
-```
-🛒 *Your Order*
-
-2x Jollof Rice (Large) — ₦5,000
-1x Chapman (Large) — ₦800
-
-*Total: ₦5,800*
-
-Reply:
-✅ *CONFIRM* — place order
-✏️ *EDIT* — change items
-❌ *CANCEL* — cancel order
-```
+### AWAITING_ADDRESS (physical only)
+1. Show cart summary
+2. Ask for delivery address
+3. Confirm address with YES/NO buttons
+4. YES → `shouldCreateOrder = true`
 
 ### AWAITING_PAYMENT
-Show available payment methods for this vendor:
-- If `paystack`: Generate Paystack payment link
-- If `bank_transfer`: Show bank name, account number, account name
-- If `both`: Let customer choose
+Handles customer replies:
+- `PAID` → find PAYMENT_PENDING bank_transfer order, send msgVendorBankTransferClaim to vendor
+- `DELIVERY` / `PICKUP` → delivery choice (when `awaitingDeliveryChoice`)
+- `PICKUP_LOC:<uuid>` → pickup location selected (when `awaitingPickupChoice`)
+- `RETRY_ORDER <orderId>` → re-initiate payment after expiry (resets to ORDERING)
 
-For bank transfer, send vendor a notification immediately with order details.
-
-### Order Confirmation to Customer
+## Vendor Notification on New Order
+Sent to ALL VendorNotificationNumber records:
 ```
-✅ *Order Confirmed!*
-
-Order #PM-00123
-2x Jollof Rice — ₦5,000
-1x Chapman — ₦800
-Total: ₦5,800
-
-We've notified Mama Tee's Kitchen. You'll receive an update soon! 🎉
+🔔 NEW ORDER!
+Order ID: ORD-XXXXXX
+Time: ...
+Customer: Name (masked phone)
+Items: ...
+Total: ₦X,XXX
+📍 Delivery to: [dashboard] OR 📍 Pickup at: [Branch Name — Address]
+Reply CONFIRM ORD-XXXXX to accept
 ```
-
-### Order Notification to Vendor
-Send to ALL numbers in `VendorNotificationNumber` table:
-```
-🔔 *New Order!*
-
-Order #PM-00123
-Customer: Ada (+234801...)
-
-2x Jollof Rice (Large) — ₦5,000
-1x Chapman (Large) — ₦800
-
-*Total: ₦5,800*
-Payment: Bank Transfer
-
-Reply CONFIRM-00123 or REJECT-00123
-```
+Buttons: ✅ Confirm | ❌ Reject | 📞 Contact Customer
 
 ## Cart Data Structure
 ```typescript
 interface CartItem {
   productId: string;
-  name: string;        // denormalized for display
+  name: string;       // denormalized snapshot
   quantity: number;
-  unitPrice: number;   // in kobo
-  note?: string;       // special instructions
+  unitPrice: number;  // in kobo at order time
+  note?: string;
 }
 ```
-Stored as JSON in `ConversationSession.cartItems`.
 
-## Order Record Creation
-Only create the `Order` DB record when payment is confirmed — not at cart stage.
-Order items are created in the same transaction as the order.
+## Order Record — Key Fields
+```
+paystackReference     unique, used for Paystack webhook lookup
+paymentMethod         'paystack_transfer' | 'bank_transfer' | 'paystack_link'
+virtualBankName       set for paystack_transfer orders
+virtualAccountNumber  set for paystack_transfer orders
+virtualAccountExpiry  30 minutes from order creation
+deliveryType          'delivery' | 'pickup'
+pickupLocationId      FK to PickupLocation (pickup orders only)
+```
 
 ## Critical Rules
-1. Never auto-select a product — always confirm with the customer before adding to cart
-2. Numbers in menu are positional, not DB IDs — rebuild the mapping on each menu render
-3. Always show prices in ₦ (naira) to customers — convert from kobo at display time
-4. Total must always match sum of line items — never trust client-sent totals
-5. Notify ALL vendor notification numbers, not just the primary vendor number
-6. Reset session to IDLE after order is complete or cancelled
+1. Totals always calculated server-side — never trust client amounts
+2. Order DB record is created when checkout confirmed (not at cart stage)
+3. Digital orders use paystack_link only — no bank transfer
+4. Idempotency: markPaymentProcessed() uses conditional updateMany (false→true)
+5. Notify ALL vendor notification numbers, not just the primary
+6. Phone numbers are always masked in logs: maskPhone()
+7. Monetary values stored in kobo — convert to ₦ at display only

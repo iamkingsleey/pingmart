@@ -52,3 +52,31 @@ export interface PaystackVerifyResponse {
   message: string;
   data: PaystackTransactionData & { fees: number };
 }
+
+export interface PaystackDedicatedAccountRequest {
+  customer: string; // Paystack customer code or id
+  preferred_bank: string; // e.g. 'wema-bank' or 'test-bank' for test mode
+}
+
+export interface PaystackDedicatedAccountResponse {
+  status: boolean;
+  message: string;
+  data: {
+    bank: {
+      name: string;
+      id: number;
+      slug: string;
+    };
+    account_name: string;
+    account_number: string;
+  };
+}
+
+export interface PaystackCreateCustomerResponse {
+  status: boolean;
+  message: string;
+  data: {
+    customer_code: string;
+    id: number;
+  };
+}

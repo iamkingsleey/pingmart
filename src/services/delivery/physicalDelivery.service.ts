@@ -19,12 +19,15 @@
 import { prisma } from '../../repositories/prisma';
 import { orderRepository } from '../../repositories/order.repository';
 import { vendorRepository } from '../../repositories/vendor.repository';
+import { customerRepository } from '../../repositories/customer.repository';
 import { sendTextMessage } from '../whatsapp/whatsapp.service';
-import { msgPhysicalStatusUpdate } from '../whatsapp/templates';
+import { msgPhysicalStatusUpdate, msgBankTransferRejected } from '../whatsapp/templates';
 import { getOtherNotificationPhones } from '../vendor-notify.service';
 import { resolveEscalation } from '../escalation.service';
+import { handlePaymentConfirmed } from '../order/order.service';
 import { logger, maskPhone } from '../../utils/logger';
 import { OrderStatus } from '../../types';
+import { Language } from '../../i18n';
 
 const COMMAND_MAP: Record<string, OrderStatus> = {
   CONFIRM: OrderStatus.CONFIRMED,
@@ -57,6 +60,59 @@ export async function handleVendorStatusCommand(
 ): Promise<void> {
   const logCtx = { vendor: maskPhone(vendorPhone) };
   const text = rawMessage.trim().toUpperCase();
+
+  // ── CONFIRM_BANK / REJECT_BANK — vendor confirms/rejects a bank transfer ───
+  // Payload: "CONFIRM_BANK ORD-XXXXXX" or "REJECT_BANK ORD-XXXXXX"
+  if (text.startsWith('CONFIRM_BANK ') || text.startsWith('REJECT_BANK ')) {
+    const isConfirm = text.startsWith('CONFIRM_BANK ');
+    const shortId = text.split(' ')[1] ?? '';
+
+    let btVendor = await vendorRepository.findByWhatsAppNumber(vendorPhone);
+    if (!btVendor) {
+      const notifRecord = await prisma.vendorNotificationNumber.findFirst({
+        where: { phone: vendorPhone, isActive: true },
+        include: { vendor: true },
+      });
+      btVendor = notifRecord?.vendor ?? null;
+    }
+    if (!btVendor) { logger.warn('Bank transfer command from unregistered phone', logCtx); return; }
+
+    const normalised = shortId.replace('ORD-', '');
+    const { orders } = await orderRepository.findByVendor(btVendor.id, { limit: 100 });
+    const btOrder = orders.find((o) => o.id.slice(-6).toUpperCase() === normalised);
+
+    if (!btOrder) {
+      await sendTextMessage(vendorPhone, `Order *${shortId}* not found.`);
+      return;
+    }
+
+    const customerPhone = btOrder.customer.whatsappNumber;
+    const customerRecord = await customerRepository.findByWhatsAppNumber(customerPhone);
+    const lang = (customerRecord?.language ?? 'en') as Language;
+
+    if (isConfirm) {
+      const wasUpdated = await orderRepository.markBankTransferPaid(btOrder.id);
+      if (!wasUpdated) {
+        await sendTextMessage(vendorPhone, `Order *${shortId}* is already processed.`);
+        return;
+      }
+      // Trigger the same fulfilment path as Paystack webhook
+      await handlePaymentConfirmed(btOrder.paystackReference);
+      await sendTextMessage(vendorPhone, `✅ Payment confirmed for order *${shortId}*. Customer notified.`);
+      logger.info('Bank transfer confirmed by vendor', { orderId: btOrder.id, vendor: maskPhone(vendorPhone) });
+    } else {
+      const wasUpdated = await orderRepository.rejectBankTransfer(btOrder.id);
+      if (!wasUpdated) {
+        await sendTextMessage(vendorPhone, `Order *${shortId}* could not be rejected (already processed).`);
+        return;
+      }
+      const { message: rejMsg } = msgBankTransferRejected(btOrder.id, lang);
+      await sendTextMessage(customerPhone, rejMsg);
+      await sendTextMessage(vendorPhone, `❌ Order *${shortId}* rejected. Customer has been notified.`);
+      logger.info('Bank transfer rejected by vendor', { orderId: btOrder.id, vendor: maskPhone(vendorPhone) });
+    }
+    return;
+  }
 
   // ── HANDLED — resolve pending customer escalation ─────────────────────────
   if (text === 'HANDLED') {

@@ -26,6 +26,15 @@ export const orderRepository = {
     deliveryAddress?: string;
     notes?: string;
     paystackReference: string;
+    // Payment method
+    paymentMethod?: string;
+    // Virtual account (Paystack Pay with Transfer)
+    virtualBankName?: string;
+    virtualAccountNumber?: string;
+    virtualAccountExpiry?: Date;
+    // Pickup/delivery
+    deliveryType?: string;
+    pickupLocationId?: string;
   }): Promise<Order> {
     return prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
@@ -40,6 +49,12 @@ export const orderRepository = {
           paystackReference: data.paystackReference,
           paymentProcessed: false,
           digitalDelivered: false,
+          paymentMethod: data.paymentMethod ?? null,
+          virtualBankName: data.virtualBankName ?? null,
+          virtualAccountNumber: data.virtualAccountNumber ?? null,
+          virtualAccountExpiry: data.virtualAccountExpiry ?? null,
+          deliveryType: data.deliveryType ?? null,
+          pickupLocationId: data.pickupLocationId ?? null,
         },
       });
 
@@ -85,6 +100,44 @@ export const orderRepository = {
       data: { paymentProcessed: true, status: 'PAYMENT_CONFIRMED' },
     });
     return result.count > 0;
+  },
+
+  /**
+   * Atomically marks a PAYMENT_PENDING order as PAID (bank transfer confirmed by vendor).
+   * Returns true only on first call; subsequent calls are no-ops.
+   */
+  async markBankTransferPaid(orderId: string): Promise<boolean> {
+    const result = await prisma.order.updateMany({
+      where: { id: orderId, status: 'PAYMENT_PENDING' },
+      data: { status: 'PAID', paymentProcessed: true },
+    });
+    return result.count > 0;
+  },
+
+  /** Expires a payment-pending order (30-min window elapsed). */
+  async expirePaymentPending(orderId: string): Promise<boolean> {
+    const result = await prisma.order.updateMany({
+      where: { id: orderId, status: 'PAYMENT_PENDING', paymentProcessed: false },
+      data: { status: 'EXPIRED' },
+    });
+    return result.count > 0;
+  },
+
+  /** Marks a bank-transfer order as rejected by vendor. */
+  async rejectBankTransfer(orderId: string): Promise<boolean> {
+    const result = await prisma.order.updateMany({
+      where: { id: orderId, status: 'PAYMENT_PENDING' },
+      data: { status: 'REJECTED' },
+    });
+    return result.count > 0;
+  },
+
+  /** Finds an order by its dedicated virtual account number (for webhook lookup). */
+  async findByVirtualAccount(accountNumber: string): Promise<Order | null> {
+    return prisma.order.findFirst({
+      where: { virtualAccountNumber: accountNumber, status: 'PAYMENT_PENDING' },
+      orderBy: { createdAt: 'desc' },
+    });
   },
 
   /** Marks digital delivery as complete */
@@ -188,7 +241,7 @@ export const orderRepository = {
       where: {
         customerId,
         vendorId,
-        status: { in: ['DELIVERED', 'DIGITAL_SENT', 'PAYMENT_CONFIRMED', 'CONFIRMED'] },
+        status: { in: ['DELIVERED', 'DIGITAL_SENT', 'PAYMENT_CONFIRMED', 'PAID', 'CONFIRMED'] },
       },
       include: {
         customer: true,

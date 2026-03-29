@@ -6,7 +6,7 @@
  * because vendors do not yet have a language preference.
  */
 import { Product } from '@prisma/client';
-import { CartItem, OrderStatus, ProductType } from '../../types';
+import { CartItem, OrderStatus, ProductType, InteractiveButton, InteractiveListSection } from '../../types';
 import {
   formatNaira,
   formatCartSummary,
@@ -292,6 +292,190 @@ export function msgNewDigitalSale(order: OrderWithDetails): string {
     `Amount: *${formatNaira(order.totalAmount)}*\n` +
     `Time: ${formatTimestamp(order.createdAt)}\n\n` +
     `✅ Product has been delivered automatically. No action needed.`
+  );
+}
+
+// ─── Payment: Paystack Pay with Transfer (Virtual Account) ────────────────────
+
+/**
+ * Sent to customer after a dedicated virtual account is created for their order.
+ * Instructs them to transfer the exact amount to the account shown.
+ */
+export function msgPayWithTransferDetails(
+  bankName: string,
+  accountNumber: string,
+  amount: number,
+  orderId: string,
+  expiresInMinutes: number = 30,
+  _lang: Language = 'en',
+): string {
+  return (
+    `💳 *Pay by Bank Transfer*\n\n` +
+    `Please transfer *${formatNaira(amount)}* to the account below:\n\n` +
+    `🏦 *Bank:* ${bankName}\n` +
+    `💳 *Account Number:* ${accountNumber}\n\n` +
+    `📌 Order: *${formatOrderId(orderId)}*\n\n` +
+    `⏰ This account expires in *${expiresInMinutes} minutes*. ` +
+    `Transfer the *exact amount* — your order will be confirmed automatically.\n\n` +
+    `Reply *STATUS* at any time to check your order.`
+  );
+}
+
+/**
+ * Sent to customer when their 30-minute payment window lapses.
+ * Returns both the message string and Reply Buttons for retry.
+ */
+export function msgTransferPaymentExpired(
+  orderId: string,
+  _lang: Language = 'en',
+): { message: string; buttons: InteractiveButton[] } {
+  return {
+    message:
+      `⏰ *Payment Window Expired*\n\n` +
+      `The transfer window for order *${formatOrderId(orderId)}* has closed.\n\n` +
+      `No payment was received. Would you like to try again?`,
+    buttons: [
+      { id: `RETRY_ORDER ${orderId}`, title: '🔄 Try Again' },
+      { id: 'MENU', title: '🛍️ Browse Menu' },
+    ],
+  };
+}
+
+// ─── Payment: Manual Bank Transfer ────────────────────────────────────────────
+
+/**
+ * Sent to customer at checkout when vendor uses manual bank transfer.
+ * Shows vendor's bank details and instructs them to notify after paying.
+ */
+export function msgBankTransferInstructions(
+  bankName: string,
+  accountNumber: string,
+  accountName: string,
+  amount: number,
+  orderId: string,
+  _lang: Language = 'en',
+): string {
+  return (
+    `🏦 *Bank Transfer Details*\n\n` +
+    `Please transfer *${formatNaira(amount)}* to:\n\n` +
+    `🏦 *Bank:* ${bankName}\n` +
+    `💳 *Account:* ${accountNumber}\n` +
+    `👤 *Name:* ${accountName}\n\n` +
+    `📌 Order: *${formatOrderId(orderId)}*\n\n` +
+    `After transferring, reply *PAID* to notify us. ` +
+    `The vendor will confirm and your order will be processed. ✅`
+  );
+}
+
+/**
+ * Sent to vendor when a customer claims they've made a bank transfer.
+ * Includes CONFIRM and REJECT Reply Buttons.
+ */
+export function msgVendorBankTransferClaim(
+  order: OrderWithDetails,
+): { message: string; buttons: InteractiveButton[] } {
+  const itemLines = order.orderItems
+    .map((oi) => `• ${oi.product.name} x${oi.quantity} — ${formatNaira(oi.unitPrice * oi.quantity)}`)
+    .join('\n');
+  const customerName = order.customer.name ?? 'A customer';
+  const maskedPhone = order.customer.whatsappNumber.replace(/(\+\d{3})\d+(\d{4})/, '$1***$2');
+
+  return {
+    message:
+      `💬 *Payment Claim*\n\n` +
+      `${customerName} (${maskedPhone}) says they've transferred payment for:\n\n` +
+      `${itemLines}\n\n` +
+      `*Total: ${formatNaira(order.totalAmount)}*\n` +
+      `📌 Order: *${formatOrderId(order.id)}*\n\n` +
+      `Did you receive this payment?`,
+    buttons: [
+      { id: `CONFIRM_BANK ${formatOrderId(order.id)}`, title: '✅ Yes, Received' },
+      { id: `REJECT_BANK ${formatOrderId(order.id)}`,  title: '❌ Not Received' },
+    ],
+  };
+}
+
+/** Sent to customer after vendor confirms receipt of bank transfer */
+export function msgBankTransferConfirmed(
+  orderId: string,
+  businessName: string,
+  _lang: Language = 'en',
+): string {
+  return (
+    `✅ *Payment Confirmed!*\n\n` +
+    `*${businessName}* has confirmed receipt of your payment.\n\n` +
+    `Your order *${formatOrderId(orderId)}* is being processed! ` +
+    `We'll keep you updated. 🙏`
+  );
+}
+
+/** Sent to customer after vendor rejects bank transfer claim */
+export function msgBankTransferRejected(
+  orderId: string,
+  _lang: Language = 'en',
+): { message: string; buttons: InteractiveButton[] } {
+  return {
+    message:
+      `❌ *Payment Not Confirmed*\n\n` +
+      `Unfortunately, *${formatOrderId(orderId)}* could not be confirmed.\n\n` +
+      `The vendor did not receive your transfer. Please check your bank and try again, ` +
+      `or contact the store for assistance.`,
+    buttons: [
+      { id: 'MENU', title: '🛍️ Browse Menu' },
+    ],
+  };
+}
+
+// ─── Delivery / Pickup Choice ─────────────────────────────────────────────────
+
+/**
+ * Reply Buttons asking customer to choose delivery or pickup at checkout.
+ */
+export function msgDeliveryOrPickup(_lang: Language = 'en'): { message: string; buttons: InteractiveButton[] } {
+  return {
+    message: `🚚 *How would you like to receive your order?*`,
+    buttons: [
+      { id: 'DELIVERY', title: '🚚 Home Delivery' },
+      { id: 'PICKUP',   title: '📍 Pickup at Location' },
+    ],
+  };
+}
+
+/**
+ * List message for customer to choose a pickup location.
+ */
+export function msgPickupLocationList(
+  locations: Array<{ id: string; name: string; address: string; landmark?: string | null }>,
+): { message: string; sections: InteractiveListSection[] } {
+  return {
+    message: `📍 *Choose a pickup location:*`,
+    sections: [
+      {
+        title: 'Available Locations',
+        rows: locations.map((loc) => ({
+          id: `PICKUP_LOC:${loc.id}`,
+          title: loc.name,
+          description: loc.landmark ? `${loc.address} — ${loc.landmark}` : loc.address,
+        })),
+      },
+    ],
+  };
+}
+
+/**
+ * Confirmation of the chosen pickup location.
+ */
+export function msgPickupLocationConfirmed(
+  locationName: string,
+  address: string,
+  _lang: Language = 'en',
+): string {
+  return (
+    `📍 *Pickup Location Confirmed*\n\n` +
+    `You'll collect your order from:\n` +
+    `*${locationName}*\n` +
+    `${address}\n\n` +
+    `Proceeding to payment...`
   );
 }
 

@@ -61,7 +61,40 @@ export async function handlePaystackWebhook(req: Request, res: Response): Promis
   }
 
   try {
-    // Verify the order exists in our database
+    const channel = payload.data?.channel ?? '';
+    // For dedicated_nuban payments, the virtual account number is in authorization
+    const authorization = (payload.data as unknown as { authorization?: { receiver_bank_account_number?: string } }).authorization;
+    const accountNumber = authorization?.receiver_bank_account_number ?? '';
+
+    // ── dedicated_nuban (Pay with Transfer) ────────────────────────────────
+    // For virtual account payments, Paystack does NOT include our paystackReference
+    // in the webhook. We look up the order by the virtual account number instead.
+    if (channel === 'dedicated_nuban' && accountNumber) {
+      logger.info('Dedicated NUBAN payment received', { account: accountNumber.slice(-4) });
+
+      const nubanOrder = await orderRepository.findByVirtualAccount(accountNumber);
+      if (!nubanOrder) {
+        logger.warn('dedicated_nuban charge for unknown account — ignored', { account: accountNumber.slice(-4) });
+        return;
+      }
+
+      // Idempotency guard
+      const nubanNew = await orderRepository.markPaymentProcessed(nubanOrder.id);
+      if (!nubanNew) {
+        logger.info('Duplicate dedicated_nuban webhook — ignored', { orderId: nubanOrder.id });
+        return;
+      }
+
+      await paymentQueue.add(
+        { paystackReference: nubanOrder.paystackReference, event: payload.event },
+        { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true },
+      );
+
+      logger.info('Dedicated NUBAN payment job enqueued', { orderId: nubanOrder.id });
+      return;
+    }
+
+    // ── Standard charge.success (card / bank debit) ────────────────────────
     const order = await orderRepository.findByPaystackReference(reference);
     if (!order) {
       logger.warn('charge.success for unknown reference — ignored', {

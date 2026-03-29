@@ -470,35 +470,27 @@ async function advanceToPaymentSetup(
     where: { id: session.id },
     data: {
       step: 'PAYMENT_SETUP',
-      collectedData: data as unknown as PrismaJson,
+      // Clear any paymentMethod already set — we re-ask via buttons
+      collectedData: { ...data, paymentMethod: undefined } as unknown as PrismaJson,
     },
   });
 
-  const paymentMethod = data.paymentMethod ?? 'bank';
-
-  if (paymentMethod === 'paystack' || paymentMethod === 'both') {
-    await messageQueue.add({
-      to: phone,
-      message:
-        `Almost done! Let's set up payments. 💳\n\n` +
-        `Please send your *Paystack Secret Key*.\n\n` +
-        `You'll find it in *Paystack Dashboard → Settings → API Keys*.\n` +
-        `It starts with *sk_live_* or *sk_test_*`,
-      buttons: [
-        { id: 'SKIP PAYSTACK', title: '🏦 Use Bank Only' },
-      ] as InteractiveButton[],
-    });
-  } else {
-    await messageQueue.add({
-      to: phone,
-      message:
-        `Almost done! Let's set up your bank details. 🏦\n\n` +
-        `Send them like this:\n` +
-        `*Bank Name | Account Number | Account Name*\n\n` +
-        `Example:\n` +
-        `_GTBank | 0123456789 | Mallam Ahmed Suya_`,
-    });
-  }
+  // Always present the two options as Reply Buttons regardless of what was
+  // collected during COLLECTING_INFO — this keeps payment setup explicit.
+  await messageQueue.add({
+    to: phone,
+    message:
+      `Almost done! 🎉 Let's set up how your customers will pay.\n\n` +
+      `*⚡ Paystack Transfer* — Customers transfer to a dedicated virtual account. ` +
+      `Payment is confirmed automatically.\n\n` +
+      `*🏦 Bank Transfer* — Customers transfer to your regular bank account and ` +
+      `you manually confirm receipt.\n\n` +
+      `Which would you prefer?`,
+    buttons: [
+      { id: 'PAYMENT_METHOD:paystack_transfer', title: '⚡ Paystack Transfer' },
+      { id: 'PAYMENT_METHOD:bank_transfer',     title: '🏦 Bank Transfer' },
+    ] as InteractiveButton[],
+  });
 }
 
 // ─── Step: PAYMENT_SETUP ──────────────────────────────────────────────────────
@@ -547,8 +539,57 @@ async function handlePaymentSetup(
   session: VendorSetupSession,
   data: CollectedData,
 ): Promise<void> {
-  const paymentMethod = data.paymentMethod ?? 'bank';
   const trimmed = message.trim();
+
+  // ── Step 1: vendor chooses payment method via Reply Button ────────────────
+  if (!data.paymentMethod) {
+    if (trimmed === 'PAYMENT_METHOD:paystack_transfer') {
+      const updatedData: CollectedData = { ...data, paymentMethod: 'paystack' };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data: { collectedData: updatedData as unknown as PrismaJson },
+      });
+      await messageQueue.add({
+        to: phone,
+        message:
+          `Great choice! ⚡\n\n` +
+          `Please send your *Paystack Secret Key*.\n\n` +
+          `Find it in *Paystack Dashboard → Settings → API Keys*.\n` +
+          `It starts with *sk_live_* or *sk_test_*`,
+        buttons: [
+          { id: 'SKIP PAYSTACK', title: '🏦 Use Bank Only' },
+        ] as InteractiveButton[],
+      });
+      return;
+    }
+    if (trimmed === 'PAYMENT_METHOD:bank_transfer') {
+      const updatedData: CollectedData = { ...data, paymentMethod: 'bank' };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data: { collectedData: updatedData as unknown as PrismaJson },
+      });
+      await messageQueue.add({
+        to: phone,
+        message:
+          `Perfect! 🏦 Send your bank details in this format:\n` +
+          `*Bank Name | Account Number | Account Name*\n\n` +
+          `Example: _GTBank | 0123456789 | Mallam Ahmed Suya_`,
+      });
+      return;
+    }
+    // No choice yet — re-send the buttons
+    await messageQueue.add({
+      to: phone,
+      message: `Please choose your payment method:`,
+      buttons: [
+        { id: 'PAYMENT_METHOD:paystack_transfer', title: '⚡ Paystack Transfer' },
+        { id: 'PAYMENT_METHOD:bank_transfer',     title: '🏦 Bank Transfer' },
+      ] as InteractiveButton[],
+    });
+    return;
+  }
+
+  const paymentMethod = data.paymentMethod ?? 'bank';
 
   // Paystack key
   if (paymentMethod === 'paystack' || paymentMethod === 'both') {
