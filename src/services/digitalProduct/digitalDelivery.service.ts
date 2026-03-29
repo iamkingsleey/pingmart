@@ -14,6 +14,7 @@
 import { orderRepository } from '../../repositories/order.repository';
 import { vendorRepository } from '../../repositories/vendor.repository';
 import { sendTextMessage } from '../whatsapp/whatsapp.service';
+import { notifyVendorNumbers } from '../vendor-notify.service';
 import {
   msgDigitalDelivery,
   msgDigitalDeliveryFailed,
@@ -49,11 +50,16 @@ export async function deliverDigitalProduct(job: DigitalDeliveryJob): Promise<vo
     product: productName,
   });
 
-  // Notify vendor of the sale (informational — no action needed)
+  // Notify vendor of the sale (informational — fan-out to all notification numbers)
   const order = await orderRepository.findByIdWithDetails(orderId);
   if (order) {
     const { msgNewDigitalSale } = await import('../whatsapp/templates');
-    await sendTextMessage(vendorPhone, msgNewDigitalSale(order));
+    const vendorId = job.vendorId;
+    if (vendorId) {
+      await notifyVendorNumbers(vendorId, vendorPhone, msgNewDigitalSale(order));
+    } else {
+      await sendTextMessage(vendorPhone, msgNewDigitalSale(order));
+    }
   }
 }
 
@@ -80,8 +86,8 @@ export async function handleDeliveryFailure(orderId: string): Promise<void> {
     }),
   );
 
-  // Alert vendor with order details and instruction to send manually
-  await sendTextMessage(vendor.whatsappNumber, msgDigitalDeliveryFailedVendorAlert(order)).catch(
+  // Alert vendor with order details and instruction to send manually (fan-out to all numbers)
+  await notifyVendorNumbers(vendor.id, vendor.whatsappNumber, msgDigitalDeliveryFailedVendorAlert(order)).catch(
     (err) =>
       logger.error('Failed to send delivery-failure alert to vendor', {
         orderId,

@@ -136,6 +136,22 @@ Rules:
   }
 }
 
+/** Subset of vendor fields used for context-aware LLM responses */
+export interface VendorContext {
+  businessContext?: string | null;
+  specialInstructions?: string | null;
+  faqs?: string | null;
+}
+
+/** Builds the optional vendor context block injected into LLM system prompts */
+function buildVendorContextBlock(ctx: VendorContext): string {
+  const lines: string[] = [];
+  if (ctx.businessContext) lines.push(`About this business:\n${ctx.businessContext}`);
+  if (ctx.specialInstructions) lines.push(`Special instructions:\n${ctx.specialInstructions}`);
+  if (ctx.faqs) lines.push(`FAQs:\n${ctx.faqs}`);
+  return lines.length ? '\n\n' + lines.join('\n\n') : '';
+}
+
 /**
  * Generates a context-aware "we don't have that" response.
  *
@@ -149,6 +165,7 @@ export async function generateNotFoundResponse(
   customerMessage: string,
   productNames: string[],
   vendorName: string,
+  vendorCtx: VendorContext = {},
 ): Promise<string> {
   const FALLBACK = "Sorry, we don't have that! Type *MENU* to see what we offer. 😊";
   try {
@@ -157,7 +174,8 @@ export async function generateNotFoundResponse(
       max_tokens: 120,
       system:
         `You are a friendly Nigerian WhatsApp vendor assistant for ${vendorName}.\n` +
-        `The store sells: ${productNames.join(', ')}.\n` +
+        `The store sells: ${productNames.join(', ')}.` +
+        buildVendorContextBlock(vendorCtx) + '\n' +
         `A customer asked about something that is NOT on the menu.\n` +
         `Reply naturally and warmly in 1–2 short sentences explaining you don't sell that.\n` +
         `If it's clearly a different category (e.g. perfumes when you sell food), acknowledge it warmly.\n` +
@@ -172,5 +190,81 @@ export async function generateNotFoundResponse(
       error: err instanceof Error ? err.message : String(err),
     });
     return FALLBACK;
+  }
+}
+
+/**
+ * Answers a general customer question using the vendor's business context.
+ *
+ * Used when intent is UNKNOWN and the vendor has provided businessContext —
+ * the bot answers questions about delivery areas, allergens, policies, etc.
+ * instead of falling back to the state machine.
+ *
+ * Falls back to a soft "I'm not sure, ask the vendor directly" message.
+ */
+export async function generateContextAwareAnswer(
+  customerMessage: string,
+  vendorName: string,
+  productNames: string[],
+  vendorCtx: VendorContext,
+): Promise<string> {
+  const FALLBACK =
+    `I'm not sure about that — for the best answer, please contact *${vendorName}* directly. 😊\n\n` +
+    `Type *MENU* to browse or order.`;
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 200,
+      system:
+        `You are a customer service assistant for ${vendorName} on WhatsApp.\n` +
+        `Products available: ${productNames.join(', ')}.` +
+        buildVendorContextBlock(vendorCtx) + '\n' +
+        `Answer the customer's question accurately using the business context above.\n` +
+        `Be friendly and concise (2–3 sentences max). Use Nigerian-friendly language.\n` +
+        `If the answer is in the context, give it confidently.\n` +
+        `If you genuinely don't know, say so honestly and suggest contacting the vendor directly.\n` +
+        `End with a soft prompt to order or browse if relevant.`,
+      messages: [{ role: 'user', content: customerMessage }],
+    });
+    const block = response.content[0];
+    return block.type === 'text' ? block.text.trim() : FALLBACK;
+  } catch (err) {
+    logger.error('generateContextAwareAnswer failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return FALLBACK;
+  }
+}
+
+/**
+ * Extracts structured facts from a vendor's free-text business description.
+ *
+ * Takes raw text like "We use halal meat. No delivery to mainland." and returns
+ * a clean bullet-point list that gets appended to vendor.businessContext.
+ *
+ * Falls back to the raw trimmed input if the LLM call fails.
+ */
+export async function extractBusinessFacts(rawVendorText: string): Promise<string> {
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 300,
+      system:
+        `You are a business context extractor for a WhatsApp commerce platform.\n` +
+        `A vendor just described something about their business.\n` +
+        `Extract the key facts and rewrite them as clear, concise bullet points.\n` +
+        `Each bullet should be a single factual statement (not a question).\n` +
+        `Keep the vendor's intent exactly — don't add information they didn't provide.\n` +
+        `Return ONLY the bullet points, one per line, starting with "• ".\n` +
+        `No introduction, no explanation, no trailing text.`,
+      messages: [{ role: 'user', content: rawVendorText }],
+    });
+    const block = response.content[0];
+    return block.type === 'text' ? block.text.trim() : rawVendorText.trim();
+  } catch (err) {
+    logger.error('extractBusinessFacts failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return rawVendorText.trim();
   }
 }

@@ -111,6 +111,12 @@ export interface SessionData {
    * the "want the same again?" welcome. YES pre-fills cart; anything else clears it.
    */
   awaitingReorderConfirmation?: boolean;
+  /**
+   * Tracks how many consecutive NLU UNKNOWN intents have occurred in this session.
+   * After 3 consecutive UNKNOWNs the bot triggers human escalation (Phase 8).
+   * Reset to 0 on any non-UNKNOWN intent.
+   */
+  consecutiveUnknownCount?: number;
 }
 
 // ─── API Contracts ────────────────────────────────────────────────────────────
@@ -213,6 +219,8 @@ export interface DigitalDeliveryJob {
   orderId: string;
   customerPhone: string;
   vendorPhone: string;
+  /** Vendor DB id — used to fan-out the sale notification to all active notification numbers */
+  vendorId?: string;
   productName: string;
   deliveryContent: string;
   deliveryMessage: string;

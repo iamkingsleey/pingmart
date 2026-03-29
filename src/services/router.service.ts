@@ -25,6 +25,7 @@ import { orderRepository } from '../repositories/order.repository';
 import { processIncomingMessage } from './order/order.service';
 import { handleVendorStatusCommand } from './delivery/physicalDelivery.service';
 import { startVendorOnboarding, handleVendorOnboarding } from './vendor-onboarding.service';
+import { handleVendorDashboard } from './vendor-management.service';
 import { logger, maskPhone } from '../utils/logger';
 import { ConversationState } from '../types';
 import { formatNaira } from '../utils/formatters';
@@ -174,8 +175,8 @@ async function handleShopOrSellReply(phone: string, message: string): Promise<vo
 
 /**
  * Routes a message from a registered vendor.
- * Phase 5 replaces this with the full vendor dashboard.
- * Until then, fall back to the v1 status-command handler.
+ * If the vendor is mid-onboarding, routes to the onboarding handler.
+ * Otherwise routes to the Phase 5 vendor dashboard (management commands).
  */
 async function handleVendorMessage(
   phone: string,
@@ -191,9 +192,8 @@ async function handleVendorMessage(
     return;
   }
 
-  // Phase 5 will add: ADD PRODUCT, MY ORDERS, PAUSE STORE, TEACH BOT, etc.
-  // For now, delegate to the existing v1 status-update command handler.
-  await handleVendorStatusCommand(phone, message);
+  // Phase 5: full vendor dashboard
+  await handleVendorDashboard(phone, message, vendor);
 }
 
 /**

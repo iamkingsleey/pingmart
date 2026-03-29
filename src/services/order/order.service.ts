@@ -53,12 +53,14 @@ import { logger, maskPhone, maskReference } from '../../utils/logger';
 import { messageQueue } from '../../queues/message.queue';
 import { digitalDeliveryQueue } from '../../queues/digitalDelivery.queue';
 import { normaliseMessage } from '../nlp-router.service';
-import { generateNotFoundResponse } from '../llm.service';
+import { generateNotFoundResponse, generateContextAwareAnswer } from '../llm.service';
+import { detectEscalationTrigger, triggerHumanEscalation } from '../escalation.service';
 import { getStoreStatus } from '../../utils/working-hours';
 import { offHoursContactRepository } from '../../repositories/offHoursContact.repository';
 import { sessionTimeoutQueue } from '../../queues/sessionTimeout.queue';
 import { SessionTimeoutJobData } from '../../jobs/sessionTimeout.job';
 import { redis } from '../../utils/redis';
+import { notifyVendorNumbers } from '../vendor-notify.service';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -289,6 +291,26 @@ export async function processIncomingMessage(
       }
     }
 
+    // ── Escalation keyword check — runs before NLU so triggers always win ────
+    // Checks the raw message for explicit human-contact phrases ("speak to human",
+    // "manager", "complaint", etc.) before any normalisation.
+    // Skip free-text states (address, item note) where trigger words could be incidental.
+    const freeTextStates = [ConversationState.AWAITING_ADDRESS, ConversationState.AWAITING_ITEM_NOTE];
+    if (!freeTextStates.includes(currentState) && detectEscalationTrigger(rawMessage)) {
+      const pendingOrder = await orderRepository.findLast(customer.id, vendor.id);
+      await triggerHumanEscalation({
+        customerPhone: from,
+        customerName: customer.name ?? 'Customer',
+        lastMessage: rawMessage,
+        reason: 'Requested human assistance',
+        vendor,
+        orderId: pendingOrder?.id,
+        orderTotal: pendingOrder?.totalAmount ?? undefined,
+      });
+      await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
+      return;
+    }
+
     // ── NLU normalisation — skip only LANGUAGE_SELECTION, AWAITING_ADDRESS, and AWAITING_ITEM_NOTE ─
     // (free-text states must not be classified — address like "22 Jollof St" could be misclassified)
     const skipNlpStates: ConversationState[] = [
@@ -305,6 +327,45 @@ export async function processIncomingMessage(
       nlpIntent = nlpResult.intent.intent;
     }
 
+    // ── Confusion loop: track consecutive UNKNOWN intents ─────────────────────
+    // Reset on any recognised intent; increment on UNKNOWN.
+    // After 3 consecutive UNKNOWNs, escalate to a human before processing further.
+    if (nlpIntent !== null) {
+      if (nlpIntent === 'UNKNOWN') {
+        const count = (currentData.consecutiveUnknownCount ?? 0) + 1;
+        currentData = { ...currentData, consecutiveUnknownCount: count };
+        if (count >= 3) {
+          currentData = { ...currentData, consecutiveUnknownCount: 0 };
+          await sessionRepository.upsert(from, vendor.id, currentState, currentData);
+          const pendingOrder = await orderRepository.findLast(customer.id, vendor.id);
+          await triggerHumanEscalation({
+            customerPhone: from,
+            customerName: customer.name ?? 'Customer',
+            lastMessage: rawMessage,
+            reason: 'Confusion loop — bot failed to understand 3 times in a row',
+            vendor,
+            orderId: pendingOrder?.id,
+            orderTotal: pendingOrder?.totalAmount ?? undefined,
+          });
+          await messageQueue.add({
+            to: from,
+            message:
+              `Hmm, I'm having a bit of trouble understanding — my apologies! 😅\n\n` +
+              `Let me get a real person to help you out.\n\n` +
+              `Notifying the *${vendor.businessName}* team now...`,
+          });
+          await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
+          return;
+        }
+        await sessionRepository.upsert(from, vendor.id, currentState, currentData);
+      } else {
+        // Non-UNKNOWN intent — reset the counter
+        if (currentData.consecutiveUnknownCount) {
+          currentData = { ...currentData, consecutiveUnknownCount: 0 };
+        }
+      }
+    }
+
     // ── Bug 1: PRICE intercept — handle before state machine, works in any state ─
     if (messageToProcess.startsWith('PRICE:')) {
       const productId = messageToProcess.slice(6);
@@ -313,7 +374,7 @@ export async function processIncomingMessage(
         const notFoundData: SessionData = { ...currentData, nlpPendingProductId: undefined, awaitingMenuConfirmation: true };
         await sessionRepository.upsert(from, vendor.id, currentState, notFoundData);
         const productNames = products.map((p) => p.name);
-        const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName);
+        const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName, vendor);
         await enqueue(from, reply);
         await scheduleSessionTimeout(from, vendor.id, currentState, notFoundData);
       } else {
@@ -345,7 +406,7 @@ export async function processIncomingMessage(
       };
       await sessionRepository.upsert(from, vendor.id, currentState, notFoundData);
       const productNames = products.map((p) => p.name);
-      const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName);
+      const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName, vendor);
       await enqueue(from, reply);
       await scheduleSessionTimeout(from, vendor.id, currentState, notFoundData);
       // Handled by intent router — do not continue to state machine
@@ -455,6 +516,7 @@ export async function processIncomingMessage(
           (nlpResult.intent as Extract<typeof nlpResult.intent, { intent: 'MULTI_ORDER' }>).items.map((i) => i.productHint).join(', '),
           productNames,
           vendor.businessName,
+          vendor,
         );
         await enqueue(from, reply);
         await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
@@ -643,6 +705,18 @@ export async function processIncomingMessage(
         `*LANGUAGE* — Change your language\n\n` +
         `You can also just type what you want! 😊`,
       );
+      await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
+      return;
+    }
+
+    // ── UNKNOWN intent + vendor context → context-aware answer ────────────────
+    // When the LLM couldn't classify the message AND the vendor has provided
+    // businessContext, generate a smart answer instead of passing raw text to
+    // the state machine (which would just send a generic error).
+    if (nlpIntent === 'UNKNOWN' && vendor.businessContext) {
+      const productNames = products.map((p) => p.name);
+      const reply = await generateContextAwareAnswer(rawMessage, vendor.businessName, productNames, vendor);
+      await enqueue(from, reply);
       await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
       return;
     }
@@ -841,7 +915,7 @@ async function handlePhysicalPaymentConfirmed(
   }));
 
   await enqueue(customerPhone, msgPhysicalOrderConfirmedCustomer(order.id, vendor.businessName, cart, language));
-  await enqueue(vendor.whatsappNumber, msgNewPhysicalOrder(order));
+  await notifyVendorNumbers(vendor.id, vendor.whatsappNumber, msgNewPhysicalOrder(order));
 }
 
 // ─── Digital: Post-Payment ────────────────────────────────────────────────────
@@ -867,6 +941,7 @@ async function handleDigitalPaymentConfirmed(
       orderId: order.id,
       customerPhone,
       vendorPhone,
+      vendorId: order.vendorId,
       productName: product.name,
       deliveryContent: product.deliveryContent,
       deliveryMessage: product.deliveryMessage ?? `Here is your ${product.name}. Enjoy!`,
