@@ -190,15 +190,32 @@ export interface OrderFilterDto {
 
 // ─── Queue Job Payloads ───────────────────────────────────────────────────────
 
+export interface InteractiveButton {
+  id: string;
+  title: string;
+}
+
+export interface InteractiveListRow {
+  id: string;
+  title: string;
+  description?: string;
+}
+
+export interface InteractiveListSection {
+  title: string;
+  rows: InteractiveListRow[];
+}
+
 export interface WhatsAppMessageJob {
   to: string;
   message: string;
   buttons?: InteractiveButton[];
-}
-
-export interface InteractiveButton {
-  id: string;
-  title: string;
+  /** When set, sends a WhatsApp list message instead of a plain text or button message */
+  listSections?: InteractiveListSection[];
+  /** The button label on the list message (max 20 chars). Required when listSections is set. */
+  listButtonText?: string;
+  /** Optional header text for the list message */
+  listHeader?: string;
 }
 
 export interface IncomingMessageJob {

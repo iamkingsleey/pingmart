@@ -1,12 +1,14 @@
 import { messageQueue } from '../message.queue';
-import { sendTextMessage, sendButtonMessage } from '../../services/whatsapp/whatsapp.service';
+import { sendTextMessage, sendButtonMessage, sendListMessage } from '../../services/whatsapp/whatsapp.service';
 import { logger, maskPhone } from '../../utils/logger';
 
 messageQueue.process(async (job) => {
-  const { to, message, buttons } = job.data;
+  const { to, message, buttons, listSections, listButtonText, listHeader } = job.data;
   logger.debug('Processing outbound message', { jobId: job.id, to: maskPhone(to) });
 
-  if (buttons?.length) {
+  if (listSections?.length && listButtonText) {
+    await sendListMessage(to, listButtonText, message, listSections, listHeader);
+  } else if (buttons?.length) {
     await sendButtonMessage(to, message, buttons);
   } else {
     await sendTextMessage(to, message);

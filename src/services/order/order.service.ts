@@ -45,6 +45,8 @@ import {
   OrderType,
   ProductType,
   CartItem,
+  InteractiveButton,
+  InteractiveListSection,
 } from '../../types';
 import { t, Language, LANGUAGE_CODES } from '../../i18n';
 import { calculateCartTotal, formatNaira, formatCartSummary, formatOrderId } from '../../utils/formatters';
@@ -183,17 +185,15 @@ export async function processIncomingMessage(
 
     // ── Customer hasn't chosen a language yet → show language selection ───
     if (!customer.languageSet && !session) {
-      const prompt = t('lang_select_prompt', 'en', { vendorName: vendor.businessName });
       await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { cart: [] });
-      await enqueue(from, prompt);
+      await sendLanguageSelectionList(from, vendor.businessName);
       return;
     }
 
     // ── "LANGUAGE" / "CHANGE LANGUAGE" at any time → re-open language menu ─
     if (isLanguageChangeKeyword(rawMessage)) {
-      const prompt = t('lang_select_prompt', 'en', { vendorName: vendor.businessName });
       await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { cart: [] });
-      await enqueue(from, prompt);
+      await sendLanguageSelectionList(from, vendor.businessName);
       logger.info('Language change requested', { from: maskPhone(from) });
       return;
     }
@@ -725,7 +725,15 @@ export async function processIncomingMessage(
 
     await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
 
-    for (const msg of result.messages) await enqueue(from, msg);
+    // Send each message; attach interactive buttons to the LAST message if provided
+    for (let i = 0; i < result.messages.length; i++) {
+      const isLast = i === result.messages.length - 1;
+      if (isLast && result.buttons?.length) {
+        await enqueueButtons(from, result.messages[i]!, result.buttons);
+      } else {
+        await enqueue(from, result.messages[i]!);
+      }
+    }
     await scheduleSessionTimeout(from, vendor.id, result.nextState, result.nextData);
 
     if (result.shouldCreateOrder) {
@@ -735,6 +743,29 @@ export async function processIncomingMessage(
     logger.error('Error processing message', { ...ctx, error: (err as Error).message });
     await enqueue(from, msgError());
   }
+}
+
+// ─── Language Selection List ──────────────────────────────────────────────────
+
+async function sendLanguageSelectionList(from: string, vendorName: string): Promise<void> {
+  await enqueueList(
+    from,
+    `👋 Welcome to *${vendorName}*!\n\nPlease choose your preferred language to continue:`,
+    [
+      {
+        title: '🌍 Available Languages',
+        rows: [
+          { id: 'en',  title: '🇬🇧 English'  },
+          { id: 'pid', title: '🇳🇬 Pidgin'   },
+          { id: 'ig',  title: 'Igbo'          },
+          { id: 'yo',  title: 'Yorùbá'        },
+          { id: 'ha',  title: 'Hausa'         },
+        ],
+      },
+    ],
+    'Choose Language',
+    '🛍️ Language Selection',
+  );
 }
 
 // ─── Language Selection Handler ───────────────────────────────────────────────
@@ -915,7 +946,11 @@ async function handlePhysicalPaymentConfirmed(
   }));
 
   await enqueue(customerPhone, msgPhysicalOrderConfirmedCustomer(order.id, vendor.businessName, cart, language));
-  await notifyVendorNumbers(vendor.id, vendor.whatsappNumber, msgNewPhysicalOrder(order));
+  await notifyVendorNumbers(vendor.id, vendor.whatsappNumber, msgNewPhysicalOrder(order), [
+    { id: `CONFIRM ${formatOrderId(order.id)}`, title: '✅ Confirm' },
+    { id: `REJECT ${formatOrderId(order.id)}`,  title: '❌ Reject' },
+    { id: `CONTACT ${formatOrderId(order.id)}`, title: '📞 Contact Customer' },
+  ]);
 }
 
 // ─── Digital: Post-Payment ────────────────────────────────────────────────────
@@ -1034,11 +1069,24 @@ async function handleReorderReply(
   return false;
 }
 
-// ─── Queue Helper ─────────────────────────────────────────────────────────────
+// ─── Queue Helpers ────────────────────────────────────────────────────────────
+
+const QUEUE_OPTS = { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true } as const;
 
 async function enqueue(to: string, message: string): Promise<void> {
-  await messageQueue.add(
-    { to, message },
-    { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true },
-  );
+  await messageQueue.add({ to, message }, QUEUE_OPTS);
+}
+
+async function enqueueButtons(to: string, message: string, buttons: InteractiveButton[]): Promise<void> {
+  await messageQueue.add({ to, message, buttons }, QUEUE_OPTS);
+}
+
+async function enqueueList(
+  to: string,
+  message: string,
+  sections: InteractiveListSection[],
+  listButtonText: string,
+  listHeader?: string,
+): Promise<void> {
+  await messageQueue.add({ to, message, listSections: sections, listButtonText, listHeader }, QUEUE_OPTS);
 }

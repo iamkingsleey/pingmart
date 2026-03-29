@@ -32,6 +32,7 @@ const COMMAND_MAP: Record<string, OrderStatus> = {
   READY: OrderStatus.READY,
   DELIVERED: OrderStatus.DELIVERED,
   CANCEL: OrderStatus.CANCELLED,
+  REJECT: OrderStatus.CANCELLED,
 };
 
 // Statuses that mean an order is already confirmed or further along
@@ -85,12 +86,42 @@ export async function handleVendorStatusCommand(
   }
 
   const [command, shortId] = parts;
+
+  // ── CONTACT — send customer phone to vendor ───────────────────────────────
+  if (command === 'CONTACT') {
+    let contactVendor = await vendorRepository.findByWhatsAppNumber(vendorPhone);
+    if (!contactVendor) {
+      const notifRecord = await prisma.vendorNotificationNumber.findFirst({
+        where: { phone: vendorPhone, isActive: true },
+        include: { vendor: true },
+      });
+      contactVendor = notifRecord?.vendor ?? null;
+    }
+    if (!contactVendor) { logger.warn('CONTACT command from unregistered phone', logCtx); return; }
+
+    const normalised = (shortId ?? '').replace('ORD-', '');
+    const { orders } = await orderRepository.findByVendor(contactVendor.id, { limit: 100 });
+    const contactOrder = orders.find((o) => o.id.slice(-6).toUpperCase() === normalised);
+
+    if (!contactOrder) {
+      await sendTextMessage(vendorPhone, `Order *${shortId}* not found. Check the order ID and try again.`);
+      return;
+    }
+    const customerPhone = contactOrder.customer.whatsappNumber;
+    const customerName = contactOrder.customer.name ?? 'Customer';
+    await sendTextMessage(
+      vendorPhone,
+      `📞 *Contact details for Order ${shortId}*\n\n*Customer:* ${customerName}\n*Phone:* ${customerPhone}\n\nTap to call or message them directly.`,
+    );
+    return;
+  }
+
   const newStatus = command ? COMMAND_MAP[command] : undefined;
 
   if (!newStatus) {
     await sendTextMessage(
       vendorPhone,
-      `Unknown command "*${command}*".\n\nValid commands:\n• CONFIRM\n• PREPARING\n• READY\n• DELIVERED\n• CANCEL`,
+      `Unknown command "*${command}*".\n\nValid commands:\n• CONFIRM\n• PREPARING\n• READY\n• DELIVERED\n• CANCEL\n• REJECT\n• CONTACT`,
     );
     return;
   }

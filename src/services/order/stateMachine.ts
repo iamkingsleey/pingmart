@@ -19,7 +19,7 @@
  * Every handler accepts a `language` parameter and uses t() for all messages.
  */
 import { Product, Vendor } from '@prisma/client';
-import { ConversationState, SessionData, CartItem, ProductType, OrderType } from '../../types';
+import { ConversationState, SessionData, CartItem, ProductType, OrderType, InteractiveButton } from '../../types';
 import { MAX_CART_ITEMS } from '../../config/constants';
 import { t, Language } from '../../i18n';
 import { formatNaira } from '../../utils/formatters';
@@ -44,6 +44,11 @@ export interface TransitionResult {
    * The activeOrderType tells it which flow to use.
    */
   shouldCreateOrder?: boolean;
+  /**
+   * If set, the last message in `messages` should be sent as a button message.
+   * The order service attaches these buttons to the final enqueue call.
+   */
+  buttons?: InteractiveButton[];
 }
 
 // ─── Input Normalisation ──────────────────────────────────────────────────────
@@ -518,6 +523,11 @@ export function handleAwaitingAddress(
     messages: [msgConfirmAddress(address, currentData.cart, lang)],
     nextState: ConversationState.AWAITING_ADDRESS,
     nextData: { ...currentData, deliveryAddress: address },
+    buttons: [
+      { id: 'YES', title: '✅ Yes, Confirm' },
+      { id: 'NO', title: '✏️ Edit Address' },
+      { id: 'CANCEL', title: '❌ Cancel Order' },
+    ],
   };
 }
 

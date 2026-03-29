@@ -5,8 +5,8 @@ import fetch from 'node-fetch';
 import { env } from '../../config/env';
 import { WHATSAPP_API_BASE_URL } from '../../config/constants';
 import { logger, maskPhone } from '../../utils/logger';
-import { InteractiveButton } from '../../types';
-import { SendTextMessageBody, SendInteractiveButtonsBody } from '../../types/whatsapp';
+import { InteractiveButton, InteractiveListSection } from '../../types';
+import { SendTextMessageBody, SendInteractiveButtonsBody, SendInteractiveListBody } from '../../types/whatsapp';
 
 const MESSAGES_URL = `${WHATSAPP_API_BASE_URL}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
@@ -45,8 +45,40 @@ export async function sendButtonMessage(
   await callWhatsAppAPI(body, to);
 }
 
+export async function sendListMessage(
+  to: string,
+  buttonText: string,
+  bodyText: string,
+  sections: InteractiveListSection[],
+  headerText?: string,
+): Promise<void> {
+  const body: SendInteractiveListBody = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      ...(headerText ? { header: { type: 'text', text: headerText } } : {}),
+      body: { text: bodyText },
+      action: {
+        button: buttonText.slice(0, 20),
+        sections: sections.map((s) => ({
+          title: s.title,
+          rows: s.rows.map((r) => ({
+            id: r.id,
+            title: r.title.slice(0, 24),
+            ...(r.description ? { description: r.description.slice(0, 72) } : {}),
+          })),
+        })),
+      },
+    },
+  };
+  await callWhatsAppAPI(body, to);
+}
+
 async function callWhatsAppAPI(
-  body: SendTextMessageBody | SendInteractiveButtonsBody,
+  body: SendTextMessageBody | SendInteractiveButtonsBody | SendInteractiveListBody,
   to: string,
 ): Promise<void> {
   logger.debug('Sending WhatsApp message', { to: maskPhone(to), type: body.type });

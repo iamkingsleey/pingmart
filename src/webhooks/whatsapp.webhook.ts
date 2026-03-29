@@ -75,7 +75,9 @@ async function routeIncomingMessage(
 
   } else if (message.type === 'interactive') {
     const reply = message.interactive?.button_reply ?? message.interactive?.list_reply;
-    if (reply) textContent = reply.title;
+    // Use reply.id — IDs encode the actual commands the handlers expect.
+    // reply.title is display-only and may be truncated or localised.
+    if (reply) textContent = reply.id;
 
   } else if (message.type === 'audio' && message.audio?.id) {
     // ── Voice note — transcribe via Groq Whisper then process as text ────────

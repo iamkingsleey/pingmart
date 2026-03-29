@@ -70,7 +70,7 @@ const STATUS_EMOJI: Record<string, string> = {
 };
 
 /** Order-status update commands always bypass the dashboard state machine */
-const STATUS_CMDS = new Set(['CONFIRM', 'PREPARING', 'READY', 'DELIVERED', 'CANCEL']);
+const STATUS_CMDS = new Set(['CONFIRM', 'PREPARING', 'READY', 'DELIVERED', 'CANCEL', 'REJECT', 'CONTACT']);
 function isStatusCommand(norm: string): boolean {
   const [cmd] = norm.split(' ');
   return !!cmd && STATUS_CMDS.has(cmd) && norm.includes(' ');
@@ -222,21 +222,36 @@ async function handleStateReply(
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 async function showDashboard(phone: string, vendor: Vendor): Promise<void> {
-  const toggleCmd = vendor.isPaused ? '▶️ RESUME STORE' : '⏸️ PAUSE STORE';
-  await send(
-    phone,
-    `👋 Welcome back, *${vendor.businessName}*!\n\n` +
-    `What would you like to do?\n\n` +
-    `📦 ADD PRODUCT\n` +
-    `🗑️ REMOVE PRODUCT\n` +
-    `💰 UPDATE PRICE\n` +
-    `📋 MY ORDERS\n` +
-    `🔗 MY LINK\n` +
-    `${toggleCmd}\n` +
-    `🔔 NOTIFICATIONS\n` +
-    `🧠 TEACH BOT\n` +
-    `⚙️ SETTINGS`,
-  );
+  const storeToggleId    = vendor.isPaused ? 'RESUME STORE' : 'PAUSE STORE';
+  const storeToggleTitle = vendor.isPaused ? '▶️ Resume Store' : '⏸️ Pause Store';
+
+  await messageQueue.add({
+    to: phone,
+    message: `👋 Welcome back, *${vendor.businessName}*!\n\nWhat would you like to do?`,
+    listSections: [
+      {
+        title: '📦 Products & Orders',
+        rows: [
+          { id: 'ADD PRODUCT',    title: '📦 Add Product',    description: 'Add a new item to your menu'         },
+          { id: 'REMOVE PRODUCT', title: '🗑️ Remove Product',  description: 'Remove an item from your menu'       },
+          { id: 'UPDATE PRICE',   title: '💰 Update Price',   description: 'Change the price of an item'         },
+          { id: 'MY ORDERS',      title: '📋 My Orders',      description: 'View and manage recent orders'       },
+          { id: 'MY LINK',        title: '🔗 My Store Link',  description: 'Get your shareable store link'       },
+        ],
+      },
+      {
+        title: '⚙️ Store Settings',
+        rows: [
+          { id: storeToggleId,   title: storeToggleTitle,       description: vendor.isPaused ? 'Reopen your store' : 'Temporarily pause orders' },
+          { id: 'NOTIFICATIONS', title: '🔔 Notifications',     description: 'Manage order alert numbers'          },
+          { id: 'SETTINGS',      title: '⚙️ Settings',          description: 'Update store info and payment'       },
+          { id: 'TEACH BOT',     title: '🧠 Teach Bot',         description: 'Add FAQs and business context'       },
+        ],
+      },
+    ],
+    listButtonText: 'Open Menu',
+    listHeader: `🛍️ ${vendor.businessName} Dashboard`,
+  });
 }
 
 // ─── ADD PRODUCT ──────────────────────────────────────────────────────────────

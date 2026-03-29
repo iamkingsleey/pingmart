@@ -20,13 +20,24 @@ export const LANGUAGE_NAMES: Record<Language, string> = {
   ha: 'Hausa',
 };
 
-/** Maps customer reply ("1"–"5") to a Language code. */
+/**
+ * Maps customer reply to a Language code.
+ * Accepts numeric replies ("1"–"5") from legacy text prompts,
+ * and direct language codes ("en", "pid", etc.) from list-message taps.
+ */
 export const LANGUAGE_CODES: Record<string, Language> = {
+  // Numeric (legacy text prompt)
   '1': 'en',
   '2': 'pid',
   '3': 'ig',
   '4': 'yo',
   '5': 'ha',
+  // Direct code (list-message row id)
+  'en': 'en',
+  'pid': 'pid',
+  'ig': 'ig',
+  'yo': 'yo',
+  'ha': 'ha',
 };
 
 export const translations: Record<Language, Record<string, string>> = {

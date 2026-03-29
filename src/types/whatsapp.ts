@@ -83,4 +83,23 @@ export interface SendInteractiveButtonsBody {
   };
 }
 
-export type SendMessageBody = SendTextMessageBody | SendInteractiveButtonsBody;
+export interface SendInteractiveListBody {
+  messaging_product: 'whatsapp';
+  recipient_type: 'individual';
+  to: string;
+  type: 'interactive';
+  interactive: {
+    type: 'list';
+    header?: { type: 'text'; text: string };
+    body: { text: string };
+    action: {
+      button: string;
+      sections: Array<{
+        title: string;
+        rows: Array<{ id: string; title: string; description?: string }>;
+      }>;
+    };
+  };
+}
+
+export type SendMessageBody = SendTextMessageBody | SendInteractiveButtonsBody | SendInteractiveListBody;

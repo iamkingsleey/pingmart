@@ -10,6 +10,7 @@
  */
 import { prisma } from '../repositories/prisma';
 import { messageQueue } from '../queues/message.queue';
+import { InteractiveButton } from '../types';
 
 /**
  * Sends `message` to every active notification number for `vendorId`.
@@ -21,17 +22,20 @@ export async function notifyVendorNumbers(
   vendorId: string,
   fallbackPhone: string,
   message: string,
+  buttons?: InteractiveButton[],
 ): Promise<void> {
   const numbers = await prisma.vendorNotificationNumber.findMany({
     where: { vendorId, isActive: true },
   });
 
+  const job = buttons?.length ? { message, buttons } : { message };
+
   if (numbers.length === 0) {
-    await messageQueue.add({ to: fallbackPhone, message });
+    await messageQueue.add({ to: fallbackPhone, ...job });
     return;
   }
 
-  await Promise.all(numbers.map((n) => messageQueue.add({ to: n.phone, message })));
+  await Promise.all(numbers.map((n) => messageQueue.add({ to: n.phone, ...job })));
 }
 
 /**

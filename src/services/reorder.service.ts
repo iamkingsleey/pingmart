@@ -28,10 +28,17 @@ export async function sendReorderNudge(order: OrderWithDetails): Promise<void> {
     `Hey ${customerName}! 👋 It's been a week since you ordered from us.\n\n` +
     `Your last order was:\n${itemLines}\n\n` +
     `Total: ${formatNaira(order.totalAmount)}\n\n` +
-    `Want to order the same again? Reply *YES* to reorder instantly or *NO* to skip. 🍽️`;
+    `Want to order the same again? 🍽️`;
 
   await messageQueue.add(
-    { to: order.customer.whatsappNumber, message },
+    {
+      to: order.customer.whatsappNumber,
+      message,
+      buttons: [
+        { id: 'YES', title: '✅ Yes, Reorder!' },
+        { id: 'NO', title: '❌ No Thanks' },
+      ],
+    },
     { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true },
   );
 
