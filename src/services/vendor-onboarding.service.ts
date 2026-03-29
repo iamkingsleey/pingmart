@@ -878,27 +878,43 @@ async function activateStore(
 
   logger.info('Vendor store activated', { vendorId: vendor.id, storeCode, phone: maskPhone(phone) });
 
+  // Message 1 — celebration + store link
   await messageQueue.add({
     to: phone,
     message:
-      `🚀 *${data.businessName}* is now *LIVE* on Pingmart!\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🔗 *Your Store Link:*\n` +
+      `🚀 *${data.businessName} is now LIVE on Pingmart!*\n\n` +
+      `🔗 *Your Store Link*\n` +
       `wa.me/${pingmartPhone}?text=${storeCode}\n\n` +
-      `Share this link on:\n` +
+      `_Tap the link to preview your store as a customer_\n\n` +
+      `📣 *Share your link on:*\n` +
       `📱 WhatsApp Status\n` +
       `📸 Instagram Bio\n` +
       `🖨️ Business flyers\n` +
-      `💬 Customer groups\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `*Manage your store anytime:*\n` +
-      `📦 ADD PRODUCT\n` +
-      `🗑️ REMOVE PRODUCT\n` +
-      `💰 UPDATE PRICE\n` +
-      `📋 MY ORDERS\n` +
-      `⏸️ PAUSE STORE\n` +
-      `🔗 MY LINK\n` +
-      `⚙️ SETTINGS`,
+      `💬 Customer groups\n\n` +
+      `_You can manage your store anytime by messaging this number._`,
+  });
+
+  // Message 2 — dashboard list so vendor can act immediately
+  await messageQueue.add({
+    to: phone,
+    message: `What would you like to do first?`,
+    listSections: [
+      {
+        title: '🏪 Manage Your Store',
+        rows: [
+          { id: 'ADD PRODUCT',    title: '📦 Add Product',     description: 'Add a new item to your menu' },
+          { id: 'REMOVE PRODUCT', title: '🗑️ Remove Product',  description: 'Remove an item from your menu' },
+          { id: 'UPDATE PRICE',   title: '💲 Update Price',    description: 'Change a product\'s price' },
+          { id: 'MY ORDERS',      title: '📋 My Orders',       description: 'View and manage recent orders' },
+          { id: 'MY LINK',        title: '🔗 My Link',         description: 'Get your shareable store link' },
+          { id: 'PAUSE STORE',    title: '⏸️ Pause Store',     description: 'Temporarily stop taking orders' },
+          { id: 'NOTIFICATIONS',  title: '🔔 Notifications',   description: 'Manage order alert numbers' },
+          { id: 'TEACH BOT',      title: '🧠 Teach Bot',       description: 'Train the bot with your business info' },
+          { id: 'SETTINGS',       title: '⚙️ Settings',        description: 'Update hours, payment, bank details' },
+        ],
+      },
+    ],
+    listButtonText: '📋 Dashboard',
   });
 }
 
