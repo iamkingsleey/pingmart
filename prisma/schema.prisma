@@ -1,12 +1,14 @@
-// WhatsApp Order Management Bot v2 — Prisma Schema
+// WhatsApp Order Management Bot — Prisma Schema
 //
-// Supports TWO vendor types:
-//   PHYSICAL_GOODS — food, fashion, provisions. Requires delivery coordination.
-//   DIGITAL_PRODUCTS — courses, ebooks, templates. Instant delivery after payment.
-//   HYBRID — sells both. Gets a combined catalog with type labels.
+// v1 (single-vendor): Physical, digital, hybrid goods. Kobo pricing. Working hours.
+// v2 (multi-tenant):  Multiple vendors. VendorCustomer relations. Onboarding sessions.
+//                     Notification numbers. Subscription tiers. Bot intelligence.
+//
+// Migration strategy: v1 fields kept intact for backward-compat. v2 fields added alongside.
+// Phase 9 data migration will backfill ownerPhone/storeCode and clean up v1 fields.
 //
 // Rules:
-//   - All monetary values stored in KOBO (integer). Display in ₦ at the app layer.
+//   - Monetary values stored in KOBO (integer). Display in ₦ at the app layer.
 //   - Phone numbers in international format: +2348012345678
 
 generator client {
@@ -23,7 +25,7 @@ datasource db {
 model Vendor {
   id             String     @id @default(uuid())
   businessName   String
-  whatsappNumber String     @unique
+  whatsappNumber String     @unique  // v1: primary identifier. v2 superseded by ownerPhone.
   phoneNumber    String
   vendorType     VendorType @default(PHYSICAL_GOODS)
   // API key stored as bcrypt hash — never plaintext
@@ -32,22 +34,49 @@ model Vendor {
   isVerified     Boolean    @default(false)
 
   // ── Working hours ────────────────────────────────────────────────────────
-  // Times in 24-hour "HH:MM" format, interpreted in vendor's timezone.
-  // workingDays: comma-separated day numbers (0=Sun, 1=Mon … 6=Sat)
   workingHoursStart    String?  @default("08:00")
   workingHoursEnd      String?  @default("21:00")
   workingDays          String?  @default("1,2,3,4,5,6")
   timezone             String?  @default("Africa/Lagos")
-  // When true, the store is treated as always open regardless of hours
   acceptOffHoursOrders Boolean  @default(false)
+
+  // ── v2: Multi-tenant identity ─────────────────────────────────────────
+  storeCode    String?  @unique   // short code for store deep-link: wa.me/PING?text=STORECODE
+  ownerPhone   String?  @unique   // WhatsApp number used to manage the store (vendor side)
+  ownerName    String?
+  businessType String   @default("general") // food | fashion | beauty | digital | general
+  description  String?            // shown on customer welcome screen
+  welcomeMessage String?          // custom greeting override
+  isPaused     Boolean  @default(false)     // vendor can pause/resume store
+
+  // ── v2: Payment ───────────────────────────────────────────────────────
+  paystackSecretKey  String?  // AES-256-GCM encrypted at rest
+  bankName           String?
+  bankAccountNumber  String?  // AES-256-GCM encrypted at rest
+  bankAccountName    String?
+  acceptedPayments   String   @default("both") // paystack | bank | both
+
+  // ── v2: Bot intelligence ──────────────────────────────────────────────
+  businessContext     String?  // free-text vendor feeds the bot ("we use halal meat only")
+  faqs                String?  // JSON array: [{question, answer}]
+  specialInstructions String?  // e.g. "No deliveries after 9pm"
+
+  // ── v2: Subscription ─────────────────────────────────────────────────
+  plan               String    @default("free") // free | starter | growth | pro
+  subscriptionEndsAt DateTime?
 
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  products         Product[]
-  orders           Order[]
-  sessions         ConversationSession[]
-  offHoursContacts OffHoursContact[]
+  // ── Relations ─────────────────────────────────────────────────────────
+  products             Product[]
+  orders               Order[]
+  sessions             ConversationSession[]
+  offHoursContacts     OffHoursContact[]
+  // v2 relations:
+  customers            VendorCustomer[]
+  notificationNumbers  VendorNotificationNumber[]
+  setupSession         VendorSetupSession?
 
   @@map("vendors")
 }
@@ -86,6 +115,7 @@ model Product {
   productType ProductType @default(PHYSICAL)
   imageUrl    String?
   isAvailable Boolean     @default(true)
+  sortOrder   Int         @default(0)  // v2: display order on menu
 
   // ── Physical product fields ──────────────────────────────────────────────
   // null = unlimited stock; 0 = out of stock
@@ -115,19 +145,20 @@ model Product {
 
 model Customer {
   id             String   @id @default(uuid())
-  whatsappNumber String   @unique
+  whatsappNumber String   @unique  // v1 identifier. v2 uses phone (same value, backfilled in Phase 9).
   name           String?
-  // ISO language code chosen by the customer during first interaction
   language       String   @default("en")
-  // true once the customer has explicitly chosen a language (false = using default 'en')
   languageSet    Boolean  @default(false)
-  // true if customer opted out of re-order reminder messages
   reorderOptOut  Boolean  @default(false)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  orders   Order[]
-  sessions ConversationSession[]
+  // v2: phone is the global identifier across all vendor stores
+  phone String? @unique
+
+  orders          Order[]
+  sessions        ConversationSession[]
+  vendorRelations VendorCustomer[]       // per-vendor relationship data
 
   @@map("customers")
 }
@@ -182,6 +213,7 @@ model OrderItem {
   quantity  Int
   // Price in kobo at the moment the order was placed
   unitPrice Int
+  notes     String?
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
@@ -203,6 +235,10 @@ model ConversationSession {
   sessionData    Json              @default("{}")
   expiresAt      DateTime
   updatedAt      DateTime          @updatedAt
+  lastMessageId  String?
+
+  // v2: customer FK by id (used by new router; no Prisma relation declared to avoid naming conflict)
+  customerId     String?
 
   vendor   Vendor   @relation(fields: [vendorId], references: [id])
   customer Customer @relation(fields: [whatsappNumber], references: [whatsappNumber])
@@ -238,11 +274,12 @@ enum OrderType {
 }
 
 enum OrderStatus {
-  PENDING_PAYMENT   // Order created, awaiting payment
-  PAYMENT_CONFIRMED // Paystack confirmed payment
+  PENDING_PAYMENT   // v1: Order created, awaiting payment
+  PAYMENT_CONFIRMED // v1: Paystack confirmed payment
   CONFIRMED         // Vendor confirmed the order (physical only)
   PREPARING         // Vendor is preparing the order (physical only)
-  READY             // Order ready for pickup/delivery (physical only)
+  READY             // v1: Order ready for pickup/delivery
+  OUT_FOR_DELIVERY  // v2: Order is on the way to the customer
   DELIVERED         // Physical order delivered
   DIGITAL_SENT      // Digital product delivered to customer
   CANCELLED         // Order cancelled (by vendor or system)
@@ -253,7 +290,63 @@ enum ConversationState {
   IDLE               // No active conversation
   BROWSING           // Viewing catalog
   ORDERING           // Adding items to cart (physical) or viewing product detail (digital)
+  AWAITING_ITEM_NOTE // Waiting for special instructions after item added to cart
   AWAITING_ADDRESS   // Waiting for delivery address (physical only)
   AWAITING_PAYMENT   // Payment link sent, waiting for Paystack webhook
   COMPLETED          // Order placed and confirmed — ready for fresh start
+}
+
+// ─── v2: VendorCustomer ───────────────────────────────────────────────────────
+// Per-vendor relationship data for each customer. Tracks repeat orders,
+// opt-outs, and vendor-specific notes about a customer.
+
+model VendorCustomer {
+  id            String    @id @default(cuid())
+  vendorId      String
+  customerId    String
+  vendor        Vendor    @relation(fields: [vendorId], references: [id])
+  customer      Customer  @relation(fields: [customerId], references: [id])
+  totalOrders   Int       @default(0)
+  lastOrderAt   DateTime?
+  reorderOptOut Boolean   @default(false) // per-vendor opt-out (v1 was global)
+  notes         String?   // vendor notes about this customer
+
+  @@unique([vendorId, customerId])
+  @@map("vendor_customers")
+}
+
+// ─── v2: VendorSetupSession ───────────────────────────────────────────────────
+// Tracks a vendor's onboarding progress through the LLM-powered setup flow.
+// collectedData accumulates extracted answers as the conversation progresses.
+
+model VendorSetupSession {
+  id            String    @id @default(cuid())
+  vendorId      String    @unique
+  vendor        Vendor    @relation(fields: [vendorId], references: [id])
+  step          String    @default("WELCOME") // WELCOME | COLLECTING_INFO | ADDING_PRODUCTS | PAYMENT_SETUP | CONFIRMATION | COMPLETE
+  collectedData Json      @default("{}")       // partial answers accumulated by the LLM agent
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("vendor_setup_sessions")
+}
+
+// ─── v2: VendorNotificationNumber ────────────────────────────────────────────
+// All WhatsApp numbers that receive order alerts for a vendor.
+// One isPrimary=true record (the owner). Others are staff/branch numbers.
+
+model VendorNotificationNumber {
+  id        String   @id @default(cuid())
+  vendorId  String
+  vendor    Vendor   @relation(fields: [vendorId], references: [id])
+  phone     String
+  label     String?  // e.g. "Garki Branch", "Main Manager"
+  isActive  Boolean  @default(true)
+  isPrimary Boolean  @default(false) // only the owner's number should be true
+
+  createdAt DateTime @default(now())
+
+  @@unique([vendorId, phone])
+  @@map("vendor_notification_numbers")
 }

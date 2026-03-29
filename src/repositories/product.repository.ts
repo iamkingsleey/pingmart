@@ -65,6 +65,25 @@ export const productRepository = {
   async delete(productId: string): Promise<void> {
     await prisma.product.delete({ where: { id: productId } });
   },
+
+  /** Finds the most ordered available product for a vendor (by total quantity sold) */
+  async findMostPopular(vendorId: string): Promise<Product | null> {
+    const result = await prisma.orderItem.groupBy({
+      by: ['productId'],
+      where: {
+        order: {
+          vendorId,
+          status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
+        },
+        product: { vendorId, isAvailable: true },
+      },
+      _sum: { quantity: true },
+      orderBy: { _sum: { quantity: 'desc' } },
+      take: 1,
+    });
+    if (!result.length) return null;
+    return prisma.product.findUnique({ where: { id: result[0].productId } });
+  },
 };
 
 export type { Product };

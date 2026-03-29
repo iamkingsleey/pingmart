@@ -1,23 +1,18 @@
 /**
- * Incoming message worker — routes messages to bot or vendor command handler.
+ * Incoming message worker — delegates to the Phase 2 smart router.
+ *
+ * The router handles all routing logic: vendor detection, store code lookup,
+ * active session continuation, and the "shop or sell?" screen for unknowns.
+ * This worker is intentionally thin — it just dequeues and dispatches.
  */
 import { incomingMessageQueue } from '../incomingMessage.queue';
-import { processIncomingMessage } from '../../services/order/order.service';
-import { handleVendorStatusCommand } from '../../services/delivery/physicalDelivery.service';
-import { vendorRepository } from '../../repositories/vendor.repository';
+import { routeIncomingMessage } from '../../services/router.service';
 import { logger, maskPhone } from '../../utils/logger';
 
 incomingMessageQueue.process(async (job) => {
-  const { from, message, vendorWhatsAppNumber } = job.data;
-  logger.info('Processing incoming message', { from: maskPhone(from), vendor: maskPhone(vendorWhatsAppNumber) });
-
-  // If the sender is a registered vendor, treat as a status-update command
-  const senderAsVendor = await vendorRepository.findByWhatsAppNumber(from);
-  if (senderAsVendor) {
-    await handleVendorStatusCommand(from, message);
-  } else {
-    await processIncomingMessage(from, message, vendorWhatsAppNumber);
-  }
+  const { from, message, vendorWhatsAppNumber, messageId } = job.data;
+  logger.info('Processing incoming message', { from: maskPhone(from) });
+  await routeIncomingMessage(from, message, vendorWhatsAppNumber, messageId ?? '');
 });
 
 logger.info('Incoming message worker started');

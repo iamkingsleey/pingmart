@@ -48,9 +48,14 @@ export function msgPhysicalWelcome(
   products: Product[],
   isHybrid = false,
   lang: Language = 'en',
+  description?: string,
 ): string {
   const grouped = groupByCategory(products);
   const lines: string[] = [t('welcome_header', lang, { vendorName: businessName }), ''];
+
+  if (description) {
+    lines.push(description, '');
+  }
 
   lines.push(
     isHybrid
@@ -168,18 +173,23 @@ export function msgPhysicalStatusUpdate(orderId: string, status: OrderStatus): s
 
 export function msgNewPhysicalOrder(order: OrderWithDetails): string {
   const itemLines = order.orderItems
-    .map((oi) => `• ${oi.product.name} x${oi.quantity} — ${formatNaira(oi.unitPrice * oi.quantity)}`)
+    .map((oi) => {
+      const note = (oi as any).notes;
+      const notePart = note ? ` _(${note})_` : '';
+      return `• ${oi.product.name} x${oi.quantity} — ${formatNaira(oi.unitPrice * oi.quantity)}${notePart}`;
+    })
     .join('\n');
 
   const customerName = order.customer.name ?? 'Unknown customer';
   const maskedPhone = order.customer.whatsappNumber.replace(/(\+\d{3})\d+(\d{4})/, '$1***$2');
+  const generalNote = order.notes ? `\n\n📝 *Note:* ${order.notes}` : '';
 
   return (
     `🔔 *NEW ORDER!*\n\n` +
     `Order ID: *${formatOrderId(order.id)}*\n` +
     `Time: ${formatTimestamp(order.createdAt)}\n\n` +
     `*Customer:* ${customerName} (${maskedPhone})\n\n` +
-    `*Items:*\n${itemLines}\n\n` +
+    `*Items:*\n${itemLines}${generalNote}\n\n` +
     `*Total: ${formatNaira(order.totalAmount)}*\n\n` +
     `📍 *Delivery address:* [see dashboard — address not logged]\n\n` +
     `Reply *CONFIRM ${formatOrderId(order.id)}* to accept, or *CANCEL ${formatOrderId(order.id)}* to cancel.`
@@ -196,13 +206,15 @@ export function msgDigitalWelcome(
   businessName: string,
   products: Product[],
   lang: Language = 'en',
+  description?: string,
 ): string {
-  const lines: string[] = [
-    t('digital_welcome_header', lang, { vendorName: businessName }),
-    '',
-    t('digital_welcome_subtitle', lang),
-    '',
-  ];
+  const lines: string[] = [t('digital_welcome_header', lang, { vendorName: businessName }), ''];
+
+  if (description) {
+    lines.push(description, '');
+  }
+
+  lines.push(t('digital_welcome_subtitle', lang), '');
 
   let index = 1;
   for (const product of products) {

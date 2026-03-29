@@ -48,6 +48,12 @@ const envSchema = z.object({
 
   // Groq — Voice note transcription via Whisper
   GROQ_API_KEY: z.string().min(1),
+
+  // Pingmart Platform (Phase 2+)
+  // The actual E.164 phone number for store deep-links: wa.me/{PINGMART_PHONE_NUMBER}?text=STORECODE
+  PINGMART_PHONE_NUMBER: z.string().optional(),
+  // Super-admin phone number — reserved for platform-level management
+  PINGMART_ADMIN_PHONE: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

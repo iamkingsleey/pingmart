@@ -24,6 +24,16 @@ export const vendorRepository = {
     return prisma.vendor.findUnique({ where: { whatsappNumber } });
   },
 
+  async findByOwnerPhone(ownerPhone: string): Promise<Vendor | null> {
+    return prisma.vendor.findUnique({ where: { ownerPhone } });
+  },
+
+  async findByStoreCode(storeCode: string): Promise<Vendor | null> {
+    return prisma.vendor.findFirst({
+      where: { storeCode: storeCode.toUpperCase(), isActive: true, isPaused: false },
+    });
+  },
+
   async update(id: string, data: UpdateVendorDto): Promise<Vendor> {
     return prisma.vendor.update({ where: { id }, data });
   },

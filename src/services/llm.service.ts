@@ -18,13 +18,18 @@ const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
 export type CustomerIntent =
   | { intent: 'MENU' }
-  | { intent: 'ORDER'; productHint: string; quantity?: number }
+  | { intent: 'ORDER'; productHint: string; quantity?: number; note?: string }
   | { intent: 'CANCEL' }
   | { intent: 'CONFIRM' }
   | { intent: 'CART' }
   | { intent: 'PRICE_ENQUIRY'; productHint: string }
   | { intent: 'DELIVERY_ENQUIRY' }
   | { intent: 'GREETING' }
+  | { intent: 'MULTI_ORDER'; items: Array<{ productHint: string; quantity?: number }> }
+  | { intent: 'MODIFY_CART'; action: 'remove' | 'update_quantity' | 'increment'; productHint: string; quantity?: number }
+  | { intent: 'REPEAT_ORDER' }
+  | { intent: 'SHOW_CHEAPEST' }
+  | { intent: 'SHOW_POPULAR' }
   | { intent: 'UNKNOWN'; rawMessage: string };
 
 export async function interpretMessage(
@@ -41,22 +46,41 @@ Return ONLY a valid JSON object — no explanation, no markdown, no extra text.
 Possible intents and their JSON format:
 - View menu: {"intent": "MENU"}
 - Order a product: {"intent": "ORDER", "productHint": "product name here", "quantity": 1}
+- Order with special instructions: {"intent": "ORDER", "productHint": "jollof rice", "quantity": 1, "note": "extra spicy"}
+- Multiple items in one message: {"intent": "MULTI_ORDER", "items": [{"productHint": "Chapman", "quantity": 3}, {"productHint": "Sprite", "quantity": 2}]}
 - Cancel order: {"intent": "CANCEL"}
 - Confirm order: {"intent": "CONFIRM"}
 - View cart: {"intent": "CART"}
 - Ask about price OR availability: {"intent": "PRICE_ENQUIRY", "productHint": "product name here"}
 - Ask about delivery: {"intent": "DELIVERY_ENQUIRY"}
 - Greeting (hi, hello, hey): {"intent": "GREETING"}
+- Remove item from cart: {"intent": "MODIFY_CART", "action": "remove", "productHint": "product name"}
+- Change quantity in cart: {"intent": "MODIFY_CART", "action": "update_quantity", "productHint": "product name", "quantity": 3}
+- Add more of item in cart: {"intent": "MODIFY_CART", "action": "increment", "productHint": "product name", "quantity": 1}
+- Repeat last order: {"intent": "REPEAT_ORDER"}
+- Show cheapest item: {"intent": "SHOW_CHEAPEST"}
+- Show most popular item: {"intent": "SHOW_POPULAR"}
 - Anything else: {"intent": "UNKNOWN", "rawMessage": "original message here"}
 Rules:
 - Nigerian Pidgin English is common — understand it (e.g. "abeg", "wetin", "I wan", "make I")
 - Quantities can be written as words: "two", "three" → convert to numbers
 - If a product name is approximate (e.g. "jollof" for "Jollof Rice"), match it to the closest available product
 - Availability questions like "Do you have X?", "Is X available?", "Do you sell X?", "Any X today?" → PRICE_ENQUIRY
-- Examples: "Do you have jollof rice?" → {"intent": "PRICE_ENQUIRY", "productHint": "jollof rice"}
-- Examples: "Is chicken available?" → {"intent": "PRICE_ENQUIRY", "productHint": "chicken"}
-- Examples: "Do you sell eba?" → {"intent": "PRICE_ENQUIRY", "productHint": "eba"}
-- Examples: "Any dodo today?" → {"intent": "PRICE_ENQUIRY", "productHint": "dodo"}
+- MULTI_ORDER: when customer mentions multiple distinct products in one message with or without quantities
+  "3 Chapman and 2 Sprite" → {"intent": "MULTI_ORDER", "items": [{"productHint": "Chapman", "quantity": 3}, {"productHint": "Sprite", "quantity": 2}]}
+  "I want 2 jollof and 1 chicken" → {"intent": "MULTI_ORDER", "items": [{"productHint": "jollof rice", "quantity": 2}, {"productHint": "chicken", "quantity": 1}]}
+  "Give me jollof and dodo, 2 each" → {"intent": "MULTI_ORDER", "items": [{"productHint": "jollof", "quantity": 2}, {"productHint": "dodo", "quantity": 2}]}
+- ORDER with notes: detect inline special instructions and include in "note" field
+  "jollof rice, extra spicy" → {"intent": "ORDER", "productHint": "jollof rice", "quantity": 1, "note": "extra spicy"}
+  "2 egusi soup no pepper" → {"intent": "ORDER", "productHint": "egusi soup", "quantity": 2, "note": "no pepper"}
+  "grilled chicken without coleslaw" → {"intent": "ORDER", "productHint": "grilled chicken", "note": "no coleslaw"}
+- MODIFY_CART: when customer wants to change their existing cart
+  "Remove Chapman from my cart" → {"intent": "MODIFY_CART", "action": "remove", "productHint": "Chapman"}
+  "Change jollof to 3" → {"intent": "MODIFY_CART", "action": "update_quantity", "productHint": "jollof rice", "quantity": 3}
+  "Add one more chicken" → {"intent": "MODIFY_CART", "action": "increment", "productHint": "chicken", "quantity": 1}
+- REPEAT_ORDER: "same as last time", "my usual", "last order", "order again", "the usual"
+- SHOW_CHEAPEST: "cheapest", "most affordable", "cheapest thing", "wetin dey affordable"
+- SHOW_POPULAR: "most popular", "what people order most", "best seller", "what's your best"
 - MENU intent — any request to browse, see, or show available items:
   "Let me see your menu" → {"intent": "MENU"}
   "Show me the menu" → {"intent": "MENU"}

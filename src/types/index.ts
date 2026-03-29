@@ -48,6 +48,7 @@ export enum ConversationState {
   IDLE = 'IDLE',
   BROWSING = 'BROWSING',
   ORDERING = 'ORDERING',
+  AWAITING_ITEM_NOTE = 'AWAITING_ITEM_NOTE',
   AWAITING_ADDRESS = 'AWAITING_ADDRESS',
   AWAITING_PAYMENT = 'AWAITING_PAYMENT',
   COMPLETED = 'COMPLETED',
@@ -63,6 +64,7 @@ export interface CartItem {
   /** Unit price in kobo at time of selection */
   unitPrice: number;
   productType: ProductType;
+  note?: string;
 }
 
 /**
@@ -96,11 +98,19 @@ export interface SessionData {
    * An affirmative reply (yes, ok, sure, please…) is treated as MENU instead of CONFIRM.
    */
   awaitingMenuConfirmation?: boolean;
+  pendingMultiQueue?: Array<{ productId: string; name: string; price: number }>;
+  pendingNote?: string;
+  pendingNoteForProductId?: string;
   /**
    * Random nonce written to the session when a timeout job is scheduled.
    * If the customer responds, a new nonce is written — the old job sees a mismatch and skips.
    */
   timeoutNonce?: string;
+  /**
+   * Set when a returning customer taps their store link again and the router shows
+   * the "want the same again?" welcome. YES pre-fills cart; anything else clears it.
+   */
+  awaitingReorderConfirmation?: boolean;
 }
 
 // ─── API Contracts ────────────────────────────────────────────────────────────

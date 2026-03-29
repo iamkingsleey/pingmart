@@ -83,8 +83,8 @@ export function handleIdle(
   const allDigital = products.every((p) => p.productType === 'DIGITAL');
 
   const welcomeMsg = allDigital
-    ? msgDigitalWelcome(vendor.businessName, products, lang)
-    : msgPhysicalWelcome(vendor.businessName, products, isHybrid, lang);
+    ? msgDigitalWelcome(vendor.businessName, products, lang, vendor.description ?? undefined)
+    : msgPhysicalWelcome(vendor.businessName, products, isHybrid, lang, vendor.description ?? undefined);
 
   return {
     messages: [welcomeMsg],
@@ -170,6 +170,8 @@ export function handleBrowsing(
       pendingProductId: selected.id,
       pendingProductName: selected.name,
       pendingProductPrice: selected.price,
+      pendingNote: currentData.pendingNote,
+      pendingMultiQueue: currentData.pendingMultiQueue,
     },
   };
 }
@@ -243,20 +245,35 @@ export function handlePhysicalOrdering(
       quantity: qty,
       unitPrice: currentData.pendingProductPrice ?? 0,
       productType: ProductType.PHYSICAL,
+      note: currentData.pendingNote, // inline note from NLU if present
     });
 
-    const updatedData: SessionData = {
+    const baseData: SessionData = {
       ...currentData,
       cart: newCart,
       pendingProductId: undefined,
       pendingProductName: undefined,
       pendingProductPrice: undefined,
+      pendingNote: undefined,
+      pendingNoteForProductId: undefined,
     };
 
+    // If inline note was provided, skip note-asking; advance multi-queue if present
+    if (currentData.pendingNote) {
+      return advanceMultiQueue(baseData, newCart, currentData.pendingProductName ?? 'Item', qty, lang);
+    }
+
+    // No inline note — ask for special instructions before continuing
+    const addedMsg = msgItemAdded(currentData.pendingProductName ?? 'Item', qty, newCart, lang);
+    const notePrompt =
+      `Any special instructions for this item?\n` +
+      `_(e.g. extra spicy, no pepper, pack separately)_\n\n` +
+      `Reply with your note or type *SKIP* to continue. 😊`;
+
     return {
-      messages: [msgItemAdded(currentData.pendingProductName ?? 'Item', qty, newCart, lang)],
-      nextState: ConversationState.ORDERING,
-      nextData: updatedData,
+      messages: [`${addedMsg}\n\n${notePrompt}`],
+      nextState: ConversationState.AWAITING_ITEM_NOTE,
+      nextData: { ...baseData, pendingNoteForProductId: currentData.pendingProductId },
     };
   }
 
@@ -288,6 +305,131 @@ export function handlePhysicalOrdering(
     messages: [msg],
     nextState: ConversationState.ORDERING,
     nextData: currentData,
+  };
+}
+
+// ─── Multi-queue helper ───────────────────────────────────────────────────────
+
+function advanceMultiQueue(
+  data: SessionData,
+  cart: CartItem[],
+  justAddedName: string,
+  justAddedQty: number,
+  lang: Language,
+): TransitionResult {
+  if (data.pendingMultiQueue?.length) {
+    const [next, ...remaining] = data.pendingMultiQueue;
+    const nextData: SessionData = {
+      ...data,
+      pendingProductId: next.productId,
+      pendingProductName: next.name,
+      pendingProductPrice: next.price,
+      pendingMultiQueue: remaining.length > 0 ? remaining : undefined,
+    };
+    const addedMsg = msgItemAdded(justAddedName, justAddedQty, cart, lang);
+    return {
+      messages: [`${addedMsg}\n\n${msgAskQuantity(next.name, next.price, lang)}`],
+      nextState: ConversationState.ORDERING,
+      nextData,
+    };
+  }
+  return {
+    messages: [msgItemAdded(justAddedName, justAddedQty, cart, lang)],
+    nextState: ConversationState.ORDERING,
+    nextData: data,
+  };
+}
+
+// ─── AWAITING_ITEM_NOTE ───────────────────────────────────────────────────────
+
+export function handleAwaitingItemNote(
+  message: string,
+  _vendor: Vendor,
+  _products: Product[],
+  currentData: SessionData,
+  lang: Language = 'en',
+): TransitionResult {
+  const n = norm(message);
+
+  // CANCEL exits the whole flow
+  if (isCancelKeyword(n)) {
+    return {
+      messages: [t('cancel_confirm_ordering', lang)],
+      nextState: ConversationState.IDLE,
+      nextData: { cart: [] },
+    };
+  }
+
+  // DONE / CHECKOUT while in note state — apply no note and proceed to address
+  if (n === 'DONE' || n === 'CHECKOUT') {
+    if (!currentData.cart.length) {
+      return {
+        messages: [t('cart_empty_checkout', lang)],
+        nextState: ConversationState.BROWSING,
+        nextData: currentData,
+      };
+    }
+    return {
+      messages: [msgAskDeliveryAddress(currentData.cart, lang)],
+      nextState: ConversationState.AWAITING_ADDRESS,
+      nextData: { ...currentData, pendingNoteForProductId: undefined },
+    };
+  }
+
+  // SKIP or bare number (selecting next product) — no note for this item
+  const isSkip = n === 'SKIP' || n === 'NO' || n === 'NONE' || /^\d+$/.test(n);
+
+  let updatedCart = currentData.cart;
+  if (!isSkip && message.trim().length > 0 && currentData.pendingNoteForProductId) {
+    updatedCart = currentData.cart.map((item) =>
+      item.productId === currentData.pendingNoteForProductId
+        ? { ...item, note: message.trim() }
+        : item,
+    );
+  }
+
+  const clearedData: SessionData = {
+    ...currentData,
+    cart: updatedCart,
+    pendingNoteForProductId: undefined,
+  };
+
+  // Advance to next item in multi-queue if present
+  if (clearedData.pendingMultiQueue?.length) {
+    const [next, ...remaining] = clearedData.pendingMultiQueue;
+    const nextData: SessionData = {
+      ...clearedData,
+      pendingProductId: next.productId,
+      pendingProductName: next.name,
+      pendingProductPrice: next.price,
+      pendingMultiQueue: remaining.length > 0 ? remaining : undefined,
+    };
+    return {
+      messages: [msgAskQuantity(next.name, next.price, lang)],
+      nextState: ConversationState.ORDERING,
+      nextData,
+    };
+  }
+
+  // If a number was typed (selecting another item by index), handle it by going to ORDERING
+  // The number will be processed by handlePhysicalOrdering on the next round
+  if (/^\d+$/.test(n)) {
+    return {
+      messages: [t('cart_status_items', lang, { count: String(clearedData.cart.length) })],
+      nextState: ConversationState.ORDERING,
+      nextData: clearedData,
+    };
+  }
+
+  // Note recorded (or skipped) — show cart status
+  const cartMsg = clearedData.cart.length
+    ? t('cart_status_items', lang, { count: String(clearedData.cart.length) })
+    : t('cart_status_empty', lang);
+
+  return {
+    messages: [cartMsg],
+    nextState: ConversationState.ORDERING,
+    nextData: clearedData,
   };
 }
 

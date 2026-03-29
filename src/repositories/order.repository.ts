@@ -49,6 +49,7 @@ export const orderRepository = {
           productId: item.productId,
           quantity: item.quantity,
           unitPrice: item.unitPrice, // Snapshot at order time
+          notes: item.note ?? null,
         })),
       });
 
@@ -171,6 +172,30 @@ export const orderRepository = {
   /** Stamps the re-order nudge timestamp to prevent duplicate sends */
   async markReorderSent(orderId: string): Promise<void> {
     await prisma.order.update({ where: { id: orderId }, data: { reorderSentAt: new Date() } });
+  },
+
+  /** Finds the most recent order for a customer+vendor pair, regardless of status */
+  async findLast(customerId: string, vendorId: string): Promise<Order | null> {
+    return prisma.order.findFirst({
+      where: { customerId, vendorId },
+      orderBy: { createdAt: 'desc' },
+    });
+  },
+
+  /** Finds the most recent completed/delivered order for a customer+vendor pair */
+  async findLastCompleted(customerId: string, vendorId: string): Promise<OrderWithDetails | null> {
+    return prisma.order.findFirst({
+      where: {
+        customerId,
+        vendorId,
+        status: { in: ['DELIVERED', 'DIGITAL_SENT', 'PAYMENT_CONFIRMED', 'CONFIRMED'] },
+      },
+      include: {
+        customer: true,
+        orderItems: { include: { product: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   },
 };
 
