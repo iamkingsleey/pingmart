@@ -36,6 +36,9 @@ if (env.NODE_ENV === 'development') app.use(morgan('dev'));
 app.use(express.json({ limit: '1mb', verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
+// Health check must be BEFORE rate limiting so Railway's health checker never gets 429
+app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
 app.use(generalRateLimit);
 app.use(router);
 
