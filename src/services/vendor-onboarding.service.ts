@@ -629,8 +629,23 @@ async function handlePaymentSetup(
     }
   }
 
-  // Bank details — expect "Bank | Account | Name" format
-  const parts = trimmed.split('|').map(s => s.trim());
+  // Bank details — accept | or / as separator, fall back to smart space-split
+  let parts: string[] = [];
+  if (trimmed.includes('|')) {
+    parts = trimmed.split('|').map(s => s.trim()).filter(Boolean);
+  } else if (trimmed.includes('/')) {
+    parts = trimmed.split('/').map(s => s.trim()).filter(Boolean);
+  } else {
+    // No separator — try to extract: first word(s) = bank, 10-digit number = account, rest = name
+    const acctMatch = trimmed.match(/(\d{10})/);
+    if (acctMatch) {
+      const acctIdx = trimmed.indexOf(acctMatch[1]);
+      const bankPart = trimmed.slice(0, acctIdx).trim();
+      const namePart = trimmed.slice(acctIdx + 10).trim();
+      if (bankPart && namePart) parts = [bankPart, acctMatch[1], namePart];
+    }
+  }
+
   if (parts.length < 3 || !parts[0] || !parts[1] || !parts[2]) {
     await messageQueue.add({
       to: phone,
