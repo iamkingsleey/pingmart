@@ -457,6 +457,78 @@ export async function classifyVendorFlowEscape(
   }
 }
 
+// ─── Item Note Hint Generator ─────────────────────────────────────────────────
+
+/**
+ * Deterministic category → hint map covering the most common product categories
+ * on Pingmart. Keys are lowercase substrings matched against the product's
+ * category field and name. Order matters — more specific entries first.
+ */
+const NOTE_HINT_MAP: Array<{ keywords: string[]; hint: string }> = [
+  // Food & Drinks
+  { keywords: ['food', 'meal', 'rice', 'soup', 'stew', 'chicken', 'beef', 'fish', 'snack', 'cake', 'bread', 'pastry', 'pizza', 'burger', 'shawarma', 'suya', 'puff', 'moi moi', 'drink', 'juice', 'smoothie', 'chops'], hint: 'extra spicy, no onions, pack separately' },
+  // Clothing & Apparel
+  { keywords: ['shirt', 'blouse', 'dress', 'gown', 'jacket', 'hoodie', 'sweater', 'trousers', 'jeans', 'skirt', 'suit', 'cloth', 'wear', 'fashion', 'apparel', 'native', 'agbada', 'kaftan'], hint: 'size L, colour blue, monogram initials' },
+  // Shoes & Footwear
+  { keywords: ['shoe', 'sneaker', 'sandal', 'slipper', 'boot', 'heel', 'loafer', 'footwear'], hint: 'size 42, wide fit, black colourway' },
+  // Bags & Accessories
+  { keywords: ['bag', 'handbag', 'backpack', 'purse', 'wallet', 'belt', 'hat', 'cap', 'scarf', 'accessory', 'accessories', 'jewel', 'necklace', 'bracelet', 'ring', 'earring', 'wristwatch', 'watch'], hint: 'gift wrap, include card, engraving text' },
+  // Skincare & Beauty
+  { keywords: ['skincare', 'cream', 'lotion', 'serum', 'moisturiser', 'moisturizer', 'soap', 'perfume', 'cologne', 'fragrance', 'makeup', 'lipstick', 'foundation', 'beauty', 'hair', 'wig', 'weave', 'braids'], hint: 'gift wrap, include receipt, fragrance-free only' },
+  // Electronics & Gadgets
+  { keywords: ['phone', 'laptop', 'tablet', 'charger', 'cable', 'earphone', 'headphone', 'speaker', 'electronic', 'gadget', 'power bank', 'screen', 'watch', 'tv', 'camera', 'keyboard', 'mouse'], hint: 'include charger, Nigerian plug type, original warranty' },
+  // Furniture & Home
+  { keywords: ['furniture', 'chair', 'table', 'bed', 'sofa', 'shelf', 'wardrobe', 'cabinet', 'desk', 'mattress', 'home', 'decor', 'curtain', 'rug', 'cushion'], hint: 'assembly required, deliver to 3rd floor, avoid scratches' },
+  // Books & Stationery
+  { keywords: ['book', 'novel', 'textbook', 'stationery', 'pen', 'notebook', 'diary', 'planner', 'journal'], hint: 'signed copy, gift wrap, include bookmark' },
+  // Groceries & Produce
+  { keywords: ['grocery', 'groceries', 'produce', 'vegetable', 'fruit', 'pepper', 'tomato', 'onion', 'yam', 'plantain', 'palm oil', 'crayfish', 'spice'], hint: 'ripe only, no bruises, separate from liquids' },
+  // Art & Crafts
+  { keywords: ['art', 'painting', 'craft', 'handmade', 'custom', 'portrait', 'print', 'photo'], hint: 'custom text, frame colour, delivery date' },
+];
+
+/**
+ * Returns product-specific example hint text for the special-instructions prompt.
+ *
+ * Strategy (fastest to slowest, stops at first match):
+ *  1. Match product category or name against NOTE_HINT_MAP — zero LLM cost.
+ *  2. If no keyword matched, ask Claude Haiku for a 3–5 word example hint
+ *     tailored to the product. Falls back to a safe generic hint on error.
+ */
+export async function getItemNoteHint(productName: string, category: string): Promise<string> {
+  const haystack = `${productName} ${category}`.toLowerCase();
+
+  for (const { keywords, hint } of NOTE_HINT_MAP) {
+    if (keywords.some((kw) => haystack.includes(kw))) {
+      return hint;
+    }
+  }
+
+  // No keyword match — ask the LLM for a context-aware example
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 30,
+      system:
+        `You write short example hints for a WhatsApp shopping bot's special-instructions prompt.\n` +
+        `Given a product name and category, return 3 comma-separated example instructions a customer might add.\n` +
+        `Keep it to one short line, no more than 10 words total.\n` +
+        `Examples:\n` +
+        `  Jollof Rice / Food → extra spicy, no onions, pack separately\n` +
+        `  Nike Air Max / Shoes → size 42, wide fit, black colourway\n` +
+        `  iPhone 15 / Electronics → include charger, Nigerian plug, sealed box\n` +
+        `Return ONLY the hint text — no explanation, no punctuation at the end.`,
+      messages: [{ role: 'user', content: `${productName} / ${category}` }],
+    });
+    const raw = response.content[0];
+    if (raw.type === 'text' && raw.text.trim()) return raw.text.trim();
+  } catch {
+    // Fall through to generic fallback
+  }
+
+  return 'add a note, special request, gift message';
+}
+
 /**
  * Extracts structured facts from a vendor's free-text business description.
  *

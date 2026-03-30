@@ -66,7 +66,7 @@ import { logger, maskPhone, maskReference } from '../../utils/logger';
 import { messageQueue } from '../../queues/message.queue';
 import { digitalDeliveryQueue } from '../../queues/digitalDelivery.queue';
 import { normaliseMessage } from '../nlp-router.service';
-import { generateNotFoundResponse, generateContextAwareAnswer, detectMessageLanguage } from '../llm.service';
+import { generateNotFoundResponse, generateContextAwareAnswer, detectMessageLanguage, getItemNoteHint } from '../llm.service';
 import { detectEscalationTrigger, triggerHumanEscalation } from '../escalation.service';
 import { getStoreStatus } from '../../utils/working-hours';
 import { offHoursContactRepository } from '../../repositories/offHoursContact.repository';
@@ -875,6 +875,21 @@ export async function processIncomingMessage(
     const result = await runStateMachine(messageToProcess, currentState, currentData, vendor, products, language);
 
     await sessionRepository.upsert(from, vendor.id, result.nextState, result.nextData);
+
+    // ── Dynamic item-note hint ─────────────────────────────────────────────────
+    // When the state machine transitions to AWAITING_ITEM_NOTE it embeds a
+    // {NOTE_HINT} sentinel in the last message.  Replace it here with a
+    // product-specific example (category-map lookup → LLM fallback) so the
+    // prompt always feels written for the exact item the customer just added.
+    if (result.nextState === ConversationState.AWAITING_ITEM_NOTE) {
+      const pendingId = result.nextData.pendingNoteForProductId;
+      const pendingProduct = pendingId ? products.find((p) => p.id === pendingId) : undefined;
+      const hint = await getItemNoteHint(
+        pendingProduct?.name ?? result.nextData.pendingProductName ?? 'item',
+        pendingProduct?.category ?? 'General',
+      );
+      result.messages = result.messages.map((m) => m.replace('{NOTE_HINT}', hint));
+    }
 
     // Send each message; attach interactive buttons to the LAST message if provided
     for (let i = 0; i < result.messages.length; i++) {
