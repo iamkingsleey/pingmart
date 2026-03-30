@@ -43,17 +43,20 @@ export const sessionRepository = {
       create: { whatsappNumber },
       update: {},
     });
+    // Always stamp role: 'customer' so the router can distinguish customer
+    // sessions from ambiguous phone matches (e.g. a vendor owner shopping).
+    const stamped: SessionData = { ...data, role: 'customer' };
     return prisma.conversationSession.upsert({
       where: { whatsappNumber_vendorId: { whatsappNumber, vendorId } },
-      create: { whatsappNumber, vendorId, state, sessionData: data as unknown as PrismaJson, expiresAt },
-      update: { state, sessionData: data as unknown as PrismaJson, expiresAt },
+      create: { whatsappNumber, vendorId, state, sessionData: stamped as unknown as PrismaJson, expiresAt },
+      update: { state, sessionData: stamped as unknown as PrismaJson, expiresAt },
     });
   },
 
   /** Resets a session to IDLE with empty cart — called after order completion. */
   async reset(whatsappNumber: string, vendorId: string): Promise<void> {
     const expiresAt = new Date(Date.now() + SESSION_TIMEOUT_MS);
-    const emptyData: SessionData = { cart: [] };
+    const emptyData: SessionData = { cart: [], role: 'customer' };
     // Ensure the Customer row exists before writing the session — the FK
     // conversation_sessions_whatsappNumber_fkey requires it.
     await prisma.customer.upsert({

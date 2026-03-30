@@ -83,10 +83,44 @@ export async function routeIncomingMessage(
   }
 
   // ── 3. Sender is a registered vendor (v2 ownerPhone field) ────────────────
+  // IMPORTANT: Before routing to vendor dashboard, check whether this phone
+  // also has an active customer checkout session. A vendor owner shopping at
+  // their own store (or another store) must stay in the customer flow —
+  // routing based on phone alone would hijack their checkout with vendor commands.
   const vendorByOwnerPhone = await prisma.vendor.findUnique({
     where: { ownerPhone: senderPhone },
   });
   if (vendorByOwnerPhone) {
+    // Look for a live customer session in an active (non-IDLE, non-BROWSING) state.
+    // IDLE / BROWSING are low-commitment states where falling through to vendor
+    // handling is acceptable. ORDERING, AWAITING_*, AWAITING_PAYMENT etc. are
+    // in-progress checkout states that must not be interrupted.
+    const activeCustomerSession = await prisma.conversationSession.findFirst({
+      where: { whatsappNumber: senderPhone, expiresAt: { gt: new Date() } },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const checkoutStates: string[] = [
+      ConversationState.ORDERING,
+      ConversationState.AWAITING_ITEM_NOTE,
+      ConversationState.AWAITING_ADDRESS,
+      ConversationState.AWAITING_PAYMENT,
+      ConversationState.COMPLETED,
+    ];
+
+    if (activeCustomerSession && checkoutStates.includes(activeCustomerSession.state)) {
+      // Vendor-owner is mid-checkout — route to customer handler, not vendor dashboard.
+      const sessionVendor = await vendorRepository.findById(activeCustomerSession.vendorId);
+      if (sessionVendor) {
+        logger.info('Router → customer checkout session (vendor owner shopping)', {
+          from: maskPhone(senderPhone),
+          state: activeCustomerSession.state,
+        });
+        await processIncomingMessage(senderPhone, message, sessionVendor.whatsappNumber, undefined);
+        return;
+      }
+    }
+
     logger.info('Router → vendor dashboard (ownerPhone match)', { from: maskPhone(senderPhone) });
     await handleVendorMessage(senderPhone, message, vendorByOwnerPhone);
     return;

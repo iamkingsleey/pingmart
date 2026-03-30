@@ -77,6 +77,18 @@ export interface CartItem {
  * Digital flow uses selectedProductId + activeOrderType.
  */
 export interface SessionData {
+  // ── Session identity ──────────────────────────────────────────────────────
+  /**
+   * Always 'customer' — every ConversationSession belongs to a customer.
+   * Vendor state is tracked separately (Redis vendor:cmd:{phone} + VendorSetupSession).
+   * Stored explicitly so any handler can assert the role without ambiguity,
+   * and so logs make the session type immediately clear.
+   *
+   * Optional only to handle sessions created before this field was added;
+   * sessionRepository always sets it. Treat absent as 'customer'.
+   */
+  role?: 'customer';
+
   // ── Shared ────────────────────────────────────────────────────────────────
   cart: CartItem[];
   /** Which order flow this session is in (set when first product selected) */
