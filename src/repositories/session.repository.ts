@@ -36,6 +36,13 @@ export const sessionRepository = {
     data: SessionData,
   ): Promise<ConversationSession> {
     const expiresAt = new Date(Date.now() + SESSION_TIMEOUT_MS);
+    // Ensure the Customer row exists before writing the session — the FK
+    // conversation_sessions_whatsappNumber_fkey requires it.
+    await prisma.customer.upsert({
+      where:  { whatsappNumber },
+      create: { whatsappNumber },
+      update: {},
+    });
     return prisma.conversationSession.upsert({
       where: { whatsappNumber_vendorId: { whatsappNumber, vendorId } },
       create: { whatsappNumber, vendorId, state, sessionData: data as unknown as PrismaJson, expiresAt },
@@ -47,6 +54,13 @@ export const sessionRepository = {
   async reset(whatsappNumber: string, vendorId: string): Promise<void> {
     const expiresAt = new Date(Date.now() + SESSION_TIMEOUT_MS);
     const emptyData: SessionData = { cart: [] };
+    // Ensure the Customer row exists before writing the session — the FK
+    // conversation_sessions_whatsappNumber_fkey requires it.
+    await prisma.customer.upsert({
+      where:  { whatsappNumber },
+      create: { whatsappNumber },
+      update: {},
+    });
     await prisma.conversationSession.upsert({
       where: { whatsappNumber_vendorId: { whatsappNumber, vendorId } },
       create: { whatsappNumber, vendorId, state: 'IDLE', sessionData: emptyData as unknown as PrismaJson, expiresAt },
