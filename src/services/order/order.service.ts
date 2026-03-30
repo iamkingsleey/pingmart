@@ -169,22 +169,47 @@ export async function processIncomingMessage(
 
     const { customer } = await customerRepository.findOrCreate(from);
 
-    // ── Bug 1 fix: Language selection is ALWAYS the first interaction ─────────
-    // Check language before the working-hours gate so a brand-new customer never
-    // sees the closed-store message before they've even chosen a language.
+    // ── VendorCustomer junction — always upsert early ────────────────────────
+    // Must happen before the language guard so it is recorded on the very first
+    // interaction, regardless of whether the customer is selecting a language.
+    await prisma.vendorCustomer.upsert({
+      where: { vendorId_customerId: { vendorId: vendor.id, customerId: customer.id } },
+      create: { vendorId: vendor.id, customerId: customer.id },
+      update: {},
+    });
+
+    // ── Language selection gate — runs before the hours check ─────────────────
+    // Two distinct cases when languageSet is false:
+    //
+    //   A) No active LANGUAGE_SELECTION session → first touch, show the prompt.
+    //   B) Session is already in LANGUAGE_SELECTION → customer is replying with
+    //      their choice. Fast-path straight to processLanguageSelection so we
+    //      save the language and proceed to the store welcome.  The hours check
+    //      is intentionally skipped here — processLanguageSelection handles it
+    //      internally AFTER saving the language, ensuring the choice is always
+    //      persisted even if the store is currently closed.
     if (!customer.languageSet) {
-      // Only set LANGUAGE_SELECTION state if there isn't already an active one —
-      // avoids clobbering the session on repeated messages before they reply.
       const existingSession = await sessionRepository.findActive(from, vendor.id);
-      if (!existingSession || existingSession.state !== ConversationState.LANGUAGE_SELECTION) {
-        await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { cart: [] });
+
+      if (existingSession?.state === ConversationState.LANGUAGE_SELECTION) {
+        // Case B — process the language reply directly.
+        const products = await productRepository.findAvailableByVendor(vendor.id);
+        if (!products.length) {
+          await enqueue(from, t('no_items_available', 'en', { vendorName: vendor.businessName }));
+          return;
+        }
+        await processLanguageSelection(from, rawMessage, vendor, products);
+        return;
       }
+
+      // Case A — no prompt shown yet; set state and show it now.
+      await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { cart: [] });
       await sendLanguageSelectionList(from, vendor.businessName);
       return;
     }
 
     // ── Working hours gate ────────────────────────────────────────────────────
-    // Only runs for customers who have already chosen a language.
+    // Only reached for customers who have already chosen a language.
     const storeStatus = getStoreStatus(vendor);
     if (!storeStatus.isOpen) {
       await messageQueue.add(
@@ -205,13 +230,6 @@ export async function processIncomingMessage(
       });
       return;
     }
-
-    // Upsert VendorCustomer junction — creates on first interaction, no-op afterwards
-    await prisma.vendorCustomer.upsert({
-      where: { vendorId_customerId: { vendorId: vendor.id, customerId: customer.id } },
-      create: { vendorId: vendor.id, customerId: customer.id },
-      update: {},
-    });
 
     const products = await productRepository.findAvailableByVendor(vendor.id);
     const language = (customer.language as Language) ?? 'en';
