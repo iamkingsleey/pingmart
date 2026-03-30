@@ -465,8 +465,10 @@ export async function classifyVendorFlowEscape(
  * category field and name. Order matters — more specific entries first.
  */
 const NOTE_HINT_MAP: Array<{ keywords: string[]; hint: string }> = [
-  // Food & Drinks
-  { keywords: ['food', 'meal', 'rice', 'soup', 'stew', 'chicken', 'beef', 'fish', 'snack', 'cake', 'bread', 'pastry', 'pizza', 'burger', 'shawarma', 'suya', 'puff', 'moi moi', 'drink', 'juice', 'smoothie', 'chops'], hint: 'extra spicy, no onions, pack separately' },
+  // Beverages & Drinks — must come BEFORE the general food entry so 'juice'/'drink' matches here first
+  { keywords: ['juice', 'smoothie', 'smoothies', 'milkshake', 'shake', 'zobo', 'kunu', 'chapman', 'cocktail', 'mocktail', 'lemonade', 'tea', 'coffee', 'yoghurt', 'yogurt', 'drink', 'beverage', 'bottle', 'mineral water', 'spring water'], hint: 'no ice, less sugar, room temperature' },
+  // Solid Food & Meals
+  { keywords: ['food', 'meal', 'rice', 'soup', 'stew', 'chicken', 'beef', 'fish', 'snack', 'cake', 'bread', 'pastry', 'pizza', 'burger', 'shawarma', 'suya', 'puff', 'moi moi', 'chops', 'noodle', 'pasta', 'sandwich', 'wrap', 'salad', 'bbq', 'grill'], hint: 'extra spicy, no onions, pack separately' },
   // Clothing & Apparel
   { keywords: ['shirt', 'blouse', 'dress', 'gown', 'jacket', 'hoodie', 'sweater', 'trousers', 'jeans', 'skirt', 'suit', 'cloth', 'wear', 'fashion', 'apparel', 'native', 'agbada', 'kaftan'], hint: 'size L, colour blue, monogram initials' },
   // Shoes & Footwear
@@ -482,7 +484,7 @@ const NOTE_HINT_MAP: Array<{ keywords: string[]; hint: string }> = [
   // Books & Stationery
   { keywords: ['book', 'novel', 'textbook', 'stationery', 'pen', 'notebook', 'diary', 'planner', 'journal'], hint: 'signed copy, gift wrap, include bookmark' },
   // Groceries & Produce
-  { keywords: ['grocery', 'groceries', 'produce', 'vegetable', 'fruit', 'pepper', 'tomato', 'onion', 'yam', 'plantain', 'palm oil', 'crayfish', 'spice'], hint: 'ripe only, no bruises, separate from liquids' },
+  { keywords: ['grocery', 'groceries', 'produce', 'vegetable', 'fruit', 'pepper', 'tomato', 'onion', 'yam', 'plantain', 'palm oil', 'crayfish', 'spice', 'watermelon', 'banana', 'mango', 'pineapple', 'orange', 'apple', 'avocado', 'cucumber'], hint: 'ripe only, no bruises, separate from liquids' },
   // Art & Crafts
   { keywords: ['art', 'painting', 'craft', 'handmade', 'custom', 'portrait', 'print', 'photo'], hint: 'custom text, frame colour, delivery date' },
 ];
@@ -515,6 +517,7 @@ export async function getItemNoteHint(productName: string, category: string): Pr
         `Keep it to one short line, no more than 10 words total.\n` +
         `Examples:\n` +
         `  Jollof Rice / Food → extra spicy, no onions, pack separately\n` +
+        `  Apple Juice / Drinks → no ice, less sugar, room temperature\n` +
         `  Nike Air Max / Shoes → size 42, wide fit, black colourway\n` +
         `  iPhone 15 / Electronics → include charger, Nigerian plug, sealed box\n` +
         `Return ONLY the hint text — no explanation, no punctuation at the end.`,
