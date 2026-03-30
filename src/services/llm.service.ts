@@ -333,6 +333,130 @@ export async function generateContextAwareAnswer(
   }
 }
 
+// ─── Vendor Language Switch Detector ─────────────────────────────────────────
+
+/**
+ * Detects whether a vendor's message is a language-switch instruction.
+ *
+ * Pure regex — no LLM call — so it can be placed as the VERY FIRST check on
+ * every incoming vendor message without adding latency.
+ *
+ * Recognises patterns like:
+ *   "Tell me in Pidgin"  "Speak Yoruba"  "Respond in Hausa"
+ *   "Use Igbo"           "Switch to English"  "Pidgin please"
+ *
+ * Returns the target Language code, or null if no instruction detected.
+ */
+export function detectLanguageSwitchRequest(message: string): import('../i18n').Language | null {
+  const m = message.toLowerCase().trim();
+
+  // Must contain a known language name
+  const hasEnglish = /\benglish\b/.test(m);
+  const hasPidgin  = /\bpidgin\b/.test(m);
+  const hasIgbo    = /\bigbo\b/.test(m);
+  const hasYoruba  = /\b(yoruba|yor[uù]b[aá])\b/.test(m);
+  const hasHausa   = /\bhausa\b/.test(m);
+
+  if (!hasEnglish && !hasPidgin && !hasIgbo && !hasYoruba && !hasHausa) return null;
+
+  // Accept if there is an instruction verb / preposition alongside the language
+  const hasInstruction = /\b(tell|speak|reply|respond|write|talk|chat|answer|yarn|use|switch|change|in|for|please|oya|abeg)\b/.test(m);
+
+  // Also accept bare language name (1–2 words: "Pidgin" or "Pidgin please")
+  const wordCount = m.replace(/[^a-z\s]/g, '').trim().split(/\s+/).length;
+  const isBareLanguage = wordCount <= 2;
+
+  if (!hasInstruction && !isBareLanguage) return null;
+
+  if (hasEnglish) return 'en';
+  if (hasPidgin)  return 'pid';
+  if (hasIgbo)    return 'ig';
+  if (hasYoruba)  return 'yo';
+  if (hasHausa)   return 'ha';
+  return null;
+}
+
+// ─── Vendor Mid-Flow Escape Detector ─────────────────────────────────────────
+
+/**
+ * Human-readable descriptions of each vendor command step, injected into the
+ * escape-detection prompt so the LLM understands what question was just asked.
+ */
+const VENDOR_FLOW_STEP_DESCRIPTIONS: Record<string, string> = {
+  ADD_PRODUCT:            'entering a new product name and price (e.g. "Jollof Rice | 1500")',
+  REMOVE_PRODUCT_LIST:    'selecting a product to remove — choosing from a numbered list',
+  REMOVE_PRODUCT_CONFIRM: 'confirming whether to delete a product — expected YES or NO',
+  UPDATE_PRICE_LIST:      'selecting a product to update — choosing from a numbered list',
+  UPDATE_PRICE_ENTER:     'typing the new price for a product (a number)',
+  MY_ORDERS:              'browsing recent orders; can type an order ID for details',
+  NOTIFICATIONS:          'managing order-alert numbers (ADD NUMBER or REMOVE NUMBER)',
+  SETTINGS_MENU:          'choosing which setting to update — expected a number 1–6',
+  SETTINGS_NAME:          'typing a new business name',
+  SETTINGS_DESCRIPTION:   'typing a new business description',
+  SETTINGS_HOURS:         'typing new working hours in HH:MM-HH:MM format',
+  SETTINGS_PAYMENT:       'choosing a payment method — expected 1, 2, or 3',
+  SETTINGS_BANK:          'typing bank details in "Bank | Account Number | Account Name" format',
+  SETTINGS_CODE:          'typing a new store code (4–20 alphanumeric characters)',
+  TEACH_BOT:              'teaching the bot about the business (free text; DONE to finish, VIEW to see)',
+};
+
+/**
+ * Fast pre-check — skips the LLM if the message shows no escape signals.
+ * This keeps the cost of every in-flow message to zero LLM calls when the
+ * vendor is simply answering the current question.
+ */
+export function mightBeVendorFlowEscape(message: string): boolean {
+  return /\b(instead|actually|wait|sorry|abeg|oya|hold on|different|update price|add product|remove product|my orders|my link|settings|notifications|teach bot|pause|resume|want to|i want|let me|can i|switch)\b/i.test(message);
+}
+
+/**
+ * Asks the LLM whether the vendor's message is answering the current step's
+ * question, or is clearly trying to do something entirely different.
+ *
+ * Returns:
+ *  - 'CONTINUE'     — message is a valid in-flow response; keep processing normally
+ *  - One of the dashboard intent tokens (ADD_PRODUCT, UPDATE_PRICE, …)
+ *    — vendor wants to switch; clear state and route to that command
+ *
+ * Only call this after `mightBeVendorFlowEscape` returns true to avoid
+ * unnecessary LLM calls on ordinary replies.
+ *
+ * Fails safe: returns 'CONTINUE' on any error so the current flow is never
+ * silently broken.
+ */
+export async function classifyVendorFlowEscape(
+  message: string,
+  currentStep: string,
+): Promise<string> {
+  try {
+    const stepDesc = VENDOR_FLOW_STEP_DESCRIPTIONS[currentStep] ?? `in the "${currentStep}" step`;
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 20,
+      system:
+        `A WhatsApp store vendor is currently ${stepDesc}.\n` +
+        `They sent this message. Decide: are they answering the current question, OR clearly switching to a different task?\n` +
+        `If answering the current question → reply: CONTINUE\n` +
+        `If switching tasks, reply with ONE token:\n` +
+        `ADD_PRODUCT  REMOVE_PRODUCT  UPDATE_PRICE  MY_ORDERS  MY_LINK\n` +
+        `PAUSE_STORE  RESUME_STORE  NOTIFICATIONS  SETTINGS  TEACH_BOT\n` +
+        `Reply with ONLY the token — nothing else.`,
+      messages: [{ role: 'user', content: message }],
+    });
+    const raw = response.content[0];
+    if (raw.type !== 'text') return 'CONTINUE';
+    const token = raw.text.trim().toUpperCase().split(/\s/)[0] ?? 'CONTINUE';
+    const VALID = new Set([
+      'CONTINUE',
+      'ADD_PRODUCT', 'REMOVE_PRODUCT', 'UPDATE_PRICE', 'MY_ORDERS', 'MY_LINK',
+      'PAUSE_STORE', 'RESUME_STORE', 'NOTIFICATIONS', 'SETTINGS', 'TEACH_BOT',
+    ]);
+    return VALID.has(token) ? token : 'CONTINUE';
+  } catch {
+    return 'CONTINUE'; // fail safe — never break the current flow on LLM errors
+  }
+}
+
 /**
  * Extracts structured facts from a vendor's free-text business description.
  *

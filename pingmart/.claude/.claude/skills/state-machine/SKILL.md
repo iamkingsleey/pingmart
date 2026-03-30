@@ -89,6 +89,49 @@ await prisma.$transaction([
 ### 5. Language Persists Across Sessions
 Once a user selects a language, store it on the session. All subsequent messages to that user must use their chosen language. Never default back to English mid-conversation.
 
+## Clean Flow Exit Pattern (Vendor Mid-Flow Escape)
+
+When a vendor sends a message that clearly signals they want to switch to a different task while inside an active flow, the state machine must exit cleanly before routing to the new flow.
+
+### The Pattern
+
+```typescript
+// 1. Pre-check (cheap regex — no LLM cost for normal replies)
+if (mightBeVendorFlowEscape(message)) {
+
+  // 2. LLM confirms escape intent and returns a dashboard token or 'CONTINUE'
+  const escapeIntent = await classifyVendorFlowEscape(message, state.step);
+  const escapedCmd = buildIntentCommandMap(vendor)[escapeIntent];
+
+  if (escapedCmd) {
+    // 3. Clear orphaned state FIRST — never route while state is dirty
+    await clearVendorState(phone);
+
+    // 4. Soft acknowledgement before the new flow starts
+    await send(phone, `No worries! Let's do that instead. 👍`);
+
+    // 5. Route to the new command as if the vendor had typed it fresh
+    return handleTopLevelCommand(phone, message, escapedCmd, vendor);
+  }
+}
+```
+
+### Rules
+
+- **Always `clearVendorState` before routing** — leaving Redis state behind causes the next message to be misrouted into the old flow.
+- **Send the acknowledgement** (`"No worries!"`) before starting the new flow — the vendor needs feedback that the switch was understood.
+- The escape check runs **after** the CANCEL/BACK/DASHBOARD universal escape and **after** the language switch check (Bug 2), but **before** the `switch (state.step)` handler.
+- `classifyVendorFlowEscape` always returns `'CONTINUE'` on LLM errors — fail safe, never break the current flow silently.
+- `buildIntentCommandMap(vendor)` is the single source of truth for token→command mapping. It handles the `PAUSE_STORE` / `RESUME_STORE` contextual flip based on `vendor.isPaused`. Do not duplicate this map.
+
+### Where This Is Applied
+
+`handleStateReply` in `vendor-management.service.ts` — covers all post-onboarding vendor flows.
+
+### Extending to Onboarding
+
+For LLM-driven onboarding steps (COLLECTING_INFO), the underlying LLM already handles "go back" / "I want to change X" naturally via conversation history. For deterministic steps (ADDING_PRODUCTS, PAYMENT_SETUP), add the same pattern in `handleVendorOnboarding` when those steps are extended.
+
 ## Adding a New State
 
 1. Add the state name to the state enum/type in `src/types/`

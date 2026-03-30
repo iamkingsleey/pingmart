@@ -100,5 +100,56 @@ If a customer switches language mid-conversation (e.g., started in English but s
 
 Detection is skipped for `AWAITING_ADDRESS`, `AWAITING_ITEM_NOTE`, and `LANGUAGE_SELECTION` states (free-text inputs where trigger words could be incidental).
 
+## Vendor Language Instructions (Priority 1 Check)
+
+Vendors can request a language switch at ANY point — mid-flow, mid-onboarding — using natural phrases instead of a menu. This check must run **before all other processing**, including flow-state routing.
+
+### Detection — `detectLanguageSwitchRequest(message)` in `llm.service.ts`
+
+Pure regex, no LLM call. Returns a `Language` code or `null`.
+
+Recognised patterns (case-insensitive):
+| Pattern | Example |
+|---|---|
+| `tell me in/for <lang>` | "Tell me in Pidgin", "Tell me for Yoruba" |
+| `speak <lang>` | "Speak Hausa" |
+| `respond in <lang>` | "Respond in Igbo" |
+| `use <lang>` | "Use English" |
+| `switch to <lang>` | "Switch to Pidgin" |
+| `chat in <lang>` | "Chat in Hausa" |
+| Bare language name (≤ 2 words) | "Pidgin", "Pidgin please" |
+| Nigerian phrasing | "Abeg speak Pidgin", "Oya use Yoruba" |
+
+### Vendor Dashboard (`vendor-management.service.ts`)
+
+`detectLanguageSwitchRequest` is the **very first check** in `handleVendorDashboard`, before the status-command guard and before Redis state lookup. On a match:
+1. `setVendorLanguage(phone, lang)` — persists to Redis (`vendor:lang:{phone}`, 30-day TTL)
+2. Reply with `VENDOR_LANG_CONFIRM[lang]` — confirmation in the target language
+3. Show the dashboard
+
+### Vendor Onboarding (`vendor-onboarding.service.ts`)
+
+Same detection at the top of `handleVendorOnboarding`, before the step switch. On a match:
+1. `setOnboardingLanguage(phone, lang)` — same Redis key, 30-day TTL
+2. Reply with `ONBOARDING_LANG_CONFIRM[lang]`
+3. **Return without advancing the step** — the vendor's language switch is acknowledged, and we wait for their actual answer to the current onboarding question
+
+### Vendor Language Storage
+
+Vendor language is stored in Redis, not the DB (vendors have no `language` field yet):
+- Key: `vendor:lang:{phone}`
+- TTL: 30 days
+- Default: `'en'` if the key is absent
+
+### Confirmation Messages (Hardcoded per language)
+
+| Language | Confirmation |
+|---|---|
+| `en` | "Sure! I'll respond in English from now on. What would you like to do?" |
+| `pid` | "No problem! I go dey yarn you for Pidgin from now. Wetin you wan do?" |
+| `ig` | "Ọ dị mma! A ga m asị gị n'Igbo site ugbu a. Gịnị chọrọ ị mee?" |
+| `yo` | "Ko problem! Emi yoo ba ẹ sọrọ ní Yorùbá lati isisiyi. Kini o fẹ ṣe?" |
+| `ha` | "To! Zan yi magana da kai da Hausa daga yanzu. Me kake so ka yi?" |
+
 ## Language Switch
 If a user says "switch to English" or "change language" at any point, `isLanguageChangeKeyword()` detects it and shows the language selection list again. Update their session language after new selection.

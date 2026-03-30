@@ -68,6 +68,28 @@ Used during vendor onboarding when a specific format is expected but vendor send
 | `GO_BACK` | "wait", "let me change my business name", "go back" |
 | `ASKING_HELP` | "what is this?", "where do I find this?", "I don't understand" |
 
+## Mid-Flow Vendor Intent Escape Detection
+
+When a vendor is inside an active flow (Add Product, Update Price, Teach Bot, Settings, etc.) and sends a message that clearly signals they want to do something else entirely, the bot must detect this and switch flows cleanly.
+
+### How It Works
+
+1. **Fast pre-check** — `mightBeVendorFlowEscape(message)` (in `llm.service.ts`) runs a cheap regex against the message. Returns `true` only when escape signals are present (`instead`, `actually`, `I want to`, `abeg`, `oya`, etc.). Zero LLM cost for normal in-flow replies.
+2. **LLM escape check** — `classifyVendorFlowEscape(message, currentStep)` is called only when the pre-check fires. The LLM receives a plain-English description of the current step and decides: `CONTINUE` (answering the question) or a dashboard intent token (`ADD_PRODUCT`, `UPDATE_PRICE`, …).
+3. **Clean state exit** — If a non-CONTINUE token is returned, `handleStateReply` in `vendor-management.service.ts` calls `clearVendorState` first, sends a soft acknowledgement, then routes to `handleTopLevelCommand` with the mapped command string.
+
+### Rules
+
+- **Always fail safe**: `classifyVendorFlowEscape` returns `'CONTINUE'` on any LLM error so the current flow is never silently broken.
+- **Never skip `clearVendorState`** before routing: orphaned Redis state causes the next message to be misrouted.
+- **The pre-check regex is intentionally broad** — false positives only cost one extra LLM call; false negatives trap the vendor.
+- Escape detection runs **after** the CANCEL/BACK/DASHBOARD universal escape and **after** the language switch check, but **before** the step-specific handler.
+- This pattern applies to **all** `vendor-management.service.ts` states and should be extended to non-LLM onboarding steps when they are added.
+
+### Covered States
+
+`ADD_PRODUCT`, `REMOVE_PRODUCT_LIST`, `REMOVE_PRODUCT_CONFIRM`, `UPDATE_PRICE_LIST`, `UPDATE_PRICE_ENTER`, `MY_ORDERS`, `NOTIFICATIONS`, `SETTINGS_MENU`, `SETTINGS_NAME`, `SETTINGS_DESCRIPTION`, `SETTINGS_HOURS`, `SETTINGS_PAYMENT`, `SETTINGS_BANK`, `SETTINGS_CODE`, `TEACH_BOT`
+
 ## Adding a New Intent
 
 1. Add the new intent type to `CustomerIntent` union in `llm.service.ts`

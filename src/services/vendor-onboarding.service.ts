@@ -23,6 +23,9 @@ import { InteractiveButton } from '../types';
 import { encryptBankAccount } from '../utils/crypto';
 import { logger, maskPhone } from '../utils/logger';
 import { env } from '../config/env';
+import { detectLanguageSwitchRequest } from './llm.service';
+import { redis } from '../utils/redis';
+import { Language } from '../i18n';
 
 type PrismaJson = Prisma.InputJsonValue;
 
@@ -77,6 +80,24 @@ const REQUIRED_INFO_FIELDS: (keyof CollectedData)[] = [
   'businessName', 'storeCode', 'businessType', 'description',
   'workingHoursStart', 'workingHoursEnd', 'workingDays', 'paymentMethod',
 ];
+
+// ─── Onboarding Language Helpers ─────────────────────────────────────────────
+
+const ONBOARDING_LANG_TTL = 30 * 24 * 60 * 60; // 30 days
+const onboardingLangKey = (phone: string) => `vendor:lang:${phone}`;
+
+async function setOnboardingLanguage(phone: string, lang: Language): Promise<void> {
+  await redis.setex(onboardingLangKey(phone), ONBOARDING_LANG_TTL, lang);
+}
+
+/** Confirmation messages for a language switch during vendor onboarding. */
+const ONBOARDING_LANG_CONFIRM: Record<Language, string> = {
+  en:  `Sure! I'll continue in English. Let's keep going with your store setup. 😊`,
+  pid: `No problem! I go yarn you for Pidgin. Make we continue your store setup. 😊`,
+  ig:  `Ọ dị mma! A ga m asị gị n'Igbo. Ka anyị gaa n'ihu na-etolite ụlọ ahịa gị. 😊`,
+  yo:  `Ko problem! Emi yoo ba ẹ sọrọ ní Yorùbá. Jẹ ká tẹsiwaju pẹlu iṣeto itaja rẹ. 😊`,
+  ha:  `To! Zan yi magana da kai da Hausa. Mu ci gaba da saita kantin ku. 😊`,
+};
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -152,6 +173,17 @@ export async function handleVendorOnboarding(
   vendor: Vendor,
   session: VendorSetupSession,
 ): Promise<void> {
+  // ── Language instruction check — must be FIRST ────────────────────────────
+  // Vendors can say "Tell me in Pidgin" or "Speak Yoruba" at any point during
+  // onboarding. We store the preference and confirm in that language, then
+  // continue with the current onboarding step so they don't lose progress.
+  const switchLang = detectLanguageSwitchRequest(message);
+  if (switchLang) {
+    await setOnboardingLanguage(phone, switchLang);
+    await messageQueue.add({ to: phone, message: ONBOARDING_LANG_CONFIRM[switchLang] });
+    return; // don't treat this as a step answer — wait for their next message
+  }
+
   const data = (session.collectedData as unknown as CollectedData) ?? { history: [] };
 
   switch (session.step) {

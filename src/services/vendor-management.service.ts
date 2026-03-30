@@ -39,7 +39,14 @@ import { encryptBankAccount } from '../utils/crypto';
 import { logger, maskPhone } from '../utils/logger';
 import { env } from '../config/env';
 import { ProductType, OrderStatus, InteractiveButton, InteractiveListSection } from '../types';
-import { extractBusinessFacts, classifyVendorDashboardIntent } from './llm.service';
+import {
+  extractBusinessFacts,
+  classifyVendorDashboardIntent,
+  classifyVendorFlowEscape,
+  mightBeVendorFlowEscape,
+  detectLanguageSwitchRequest,
+} from './llm.service';
+import { Language } from '../i18n';
 import { resolveEscalation } from './escalation.service';
 
 // ─── Plan Limits ──────────────────────────────────────────────────────────────
@@ -119,6 +126,49 @@ async function clearVendorState(phone: string): Promise<void> {
   await redis.del(stateKey(phone));
 }
 
+// ─── Vendor Language (Redis, 30-day TTL) ──────────────────────────────────────
+
+const VENDOR_LANG_TTL = 30 * 24 * 60 * 60; // 30 days in seconds
+const vendorLangKey = (phone: string) => `vendor:lang:${phone}`;
+
+async function setVendorLanguage(phone: string, lang: Language): Promise<void> {
+  await redis.setex(vendorLangKey(phone), VENDOR_LANG_TTL, lang);
+}
+
+/**
+ * Confirmation messages sent to the vendor immediately after a language switch,
+ * each written in the target language.
+ */
+const VENDOR_LANG_CONFIRM: Record<Language, string> = {
+  en:  `Sure! I'll respond in English from now on. What would you like to do?`,
+  pid: `No problem! I go dey yarn you for Pidgin from now. Wetin you wan do?`,
+  ig:  `Ọ dị mma! A ga m asị gị n'Igbo site ugbu a. Gịnị chọrọ ị mee?`,
+  yo:  `Ko problem! Emi yoo ba ẹ sọrọ ní Yorùbá lati isisiyi. Kini o fẹ ṣe?`,
+  ha:  `To! Zan yi magana da kai da Hausa daga yanzu. Me kake so ka yi?`,
+};
+
+// ─── Mid-Flow Escape Helpers ──────────────────────────────────────────────────
+
+/**
+ * Maps the intent tokens returned by classifyVendorFlowEscape to the exact
+ * `norm` strings that handleTopLevelCommand's switch statement expects.
+ * PAUSE_STORE is contextual: an already-paused store should resume instead.
+ */
+function buildIntentCommandMap(vendor: Vendor): Record<string, string> {
+  return {
+    ADD_PRODUCT:    'ADD PRODUCT',
+    REMOVE_PRODUCT: 'REMOVE PRODUCT',
+    UPDATE_PRICE:   'UPDATE PRICE',
+    MY_ORDERS:      'MY ORDERS',
+    MY_LINK:        'MY LINK',
+    PAUSE_STORE:    vendor.isPaused ? 'RESUME STORE' : 'PAUSE STORE',
+    RESUME_STORE:   'RESUME STORE',
+    NOTIFICATIONS:  'NOTIFICATIONS',
+    SETTINGS:       'SETTINGS',
+    TEACH_BOT:      'TEACH BOT',
+  };
+}
+
 // ─── Entry Point ─────────────────────────────────────────────────────────────
 
 export async function handleVendorDashboard(
@@ -126,6 +176,17 @@ export async function handleVendorDashboard(
   message: string,
   vendor: Vendor,
 ): Promise<void> {
+  // ── Bug 2: Language instruction — must be FIRST, before anything else ────────
+  // Detects phrases like "Tell me in Pidgin", "Speak Yoruba", "Switch to Hausa".
+  // Stores the chosen language in Redis and confirms in that language immediately.
+  const switchLang = detectLanguageSwitchRequest(message);
+  if (switchLang) {
+    await setVendorLanguage(phone, switchLang);
+    await send(phone, VENDOR_LANG_CONFIRM[switchLang]);
+    await showDashboard(phone, vendor);
+    return;
+  }
+
   const norm = message.trim().toUpperCase().replace(/\s+/g, ' ');
 
   // Order status updates (CONFIRM ORD-..., PREPARING ORD-..., etc.) always win
@@ -179,19 +240,7 @@ async function handleTopLevelCommand(
     default: {
       // Try to understand natural language before falling back to dashboard
       const intent = await classifyVendorDashboardIntent(rawMessage);
-      const INTENT_MAP: Record<string, string> = {
-        ADD_PRODUCT:    'ADD PRODUCT',
-        REMOVE_PRODUCT: 'REMOVE PRODUCT',
-        UPDATE_PRICE:   'UPDATE PRICE',
-        MY_ORDERS:      'MY ORDERS',
-        MY_LINK:        'MY LINK',
-        PAUSE_STORE:    vendor.isPaused ? 'RESUME STORE' : 'PAUSE STORE',
-        RESUME_STORE:   'RESUME STORE',
-        NOTIFICATIONS:  'NOTIFICATIONS',
-        SETTINGS:       'SETTINGS',
-        TEACH_BOT:      'TEACH BOT',
-      };
-      const mapped = INTENT_MAP[intent];
+      const mapped = buildIntentCommandMap(vendor)[intent];
       if (mapped) {
         return handleTopLevelCommand(phone, rawMessage, mapped, vendor);
       }
@@ -214,6 +263,22 @@ async function handleStateReply(
     await clearVendorState(phone);
     await showDashboard(phone, vendor);
     return;
+  }
+
+  // ── Bug 1: Mid-flow intent escape ────────────────────────────────────────────
+  // If the message shows escape signals ("instead", "actually", "I want to…"),
+  // ask the LLM whether the vendor is answering the current question or clearly
+  // switching to a different task.  On a confirmed switch: clear state, send a
+  // soft acknowledgement, and route straight to the new flow — no orphaned state.
+  if (mightBeVendorFlowEscape(message)) {
+    const escapeIntent = await classifyVendorFlowEscape(message, state.step);
+    const intentMap = buildIntentCommandMap(vendor);
+    const escapedCmd = intentMap[escapeIntent];
+    if (escapedCmd) {
+      await clearVendorState(phone);
+      await send(phone, `No worries! Let's do that instead. 👍`);
+      return handleTopLevelCommand(phone, message, escapedCmd, vendor);
+    }
   }
 
   switch (state.step) {
