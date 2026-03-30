@@ -102,6 +102,15 @@ export async function normaliseMessage(
     case 'DELIVERY_ENQUIRY':
       return { text: 'DELIVERY_INFO', intent };
 
+    case 'TRACK_ORDER':
+      return { text: 'TRACK_ORDER', intent };
+
+    case 'SPEAK_TO_VENDOR':
+      return { text: 'SPEAK_TO_VENDOR', intent };
+
+    case 'HELP':
+      return { text: 'HELP', intent };
+
     default:
       return { text: rawMessage, intent };
   }

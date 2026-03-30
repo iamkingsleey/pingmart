@@ -582,6 +582,70 @@ export async function processIncomingMessage(
       return;
     }
 
+    // ── Delivery tracking / order status — works in any state ────────────────
+    if (messageToProcess === 'DELIVERY_INFO' || messageToProcess === 'TRACK_ORDER') {
+      const lastOrder = await orderRepository.findLast(customer.id, vendor.id);
+      if (!lastOrder) {
+        await enqueue(
+          from,
+          `You haven't placed any orders with *${vendor.businessName}* yet.\n\nType *MENU* to start browsing. 😊`,
+        );
+      } else {
+        const STATUS_EMOJI: Partial<Record<string, string>> = {
+          PENDING_PAYMENT: '⏳',
+          PAYMENT_PENDING: '⏳',
+          PAYMENT_CONFIRMED: '💳',
+          CONFIRMED: '✅',
+          PREPARING: '👨‍🍳',
+          READY: '🚀',
+          OUT_FOR_DELIVERY: '🚚',
+          DELIVERED: '✅',
+          DIGITAL_SENT: '📦',
+          CANCELLED: '❌',
+          EXPIRED: '❌',
+        };
+        const emoji = STATUS_EMOJI[lastOrder.status] ?? '📦';
+        const statusLabel = lastOrder.status.replace(/_/g, ' ');
+        const orderId = formatOrderId(lastOrder.id);
+        await enqueue(
+          from,
+          `${emoji} *Order ${orderId}*\n` +
+          `Status: *${statusLabel}*\n\n` +
+          `Your order has been confirmed and is being handled by *${vendor.businessName}*. ` +
+          `The vendor will reach out to you directly on WhatsApp to arrange delivery.\n\n` +
+          `If you haven't heard back within 24 hours, reply *HELP* and we'll flag it for you. 🙏`,
+        );
+      }
+      await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
+      return;
+    }
+
+    // ── Speak to vendor — connect customer with the store directly ────────────
+    if (messageToProcess === 'SPEAK_TO_VENDOR') {
+      await enqueue(
+        from,
+        `🙋 *Need to speak with ${vendor.businessName}?*\n\n` +
+        `The team at *${vendor.businessName}* will be notified and will reach out to you shortly.\n\n` +
+        `You can also:\n` +
+        `• Type *ORDER STATUS* to check your latest order\n` +
+        `• Type *HELP* for all available commands\n` +
+        `• Type *MENU* to continue shopping`,
+      );
+      // Trigger human escalation so the vendor is alerted
+      const lastOrder = await orderRepository.findLast(customer.id, vendor.id);
+      await triggerHumanEscalation({
+        customerPhone: from,
+        customerName: customer.name ?? 'Customer',
+        lastMessage: rawMessage,
+        reason: 'Customer requested to speak to the vendor',
+        vendor,
+        orderId: lastOrder?.id,
+        orderTotal: lastOrder?.totalAmount ?? undefined,
+      });
+      await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
+      return;
+    }
+
     // ── If ORDER intent has an inline note, inject into session data ──────────
     if (nlpIntent === 'ORDER' && nlpResult) {
       const orderIntent = nlpResult.intent as Extract<typeof nlpResult.intent, { intent: 'ORDER' }>;

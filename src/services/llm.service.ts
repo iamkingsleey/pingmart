@@ -24,6 +24,9 @@ export type CustomerIntent =
   | { intent: 'CART' }
   | { intent: 'PRICE_ENQUIRY'; productHint: string }
   | { intent: 'DELIVERY_ENQUIRY' }
+  | { intent: 'TRACK_ORDER' }
+  | { intent: 'SPEAK_TO_VENDOR' }
+  | { intent: 'HELP' }
   | { intent: 'GREETING' }
   | { intent: 'MULTI_ORDER'; items: Array<{ productHint: string; quantity?: number }> }
   | { intent: 'MODIFY_CART'; action: 'remove' | 'update_quantity' | 'increment'; productHint: string; quantity?: number }
@@ -52,7 +55,10 @@ Possible intents and their JSON format:
 - Confirm order: {"intent": "CONFIRM"}
 - View cart: {"intent": "CART"}
 - Ask about price OR availability: {"intent": "PRICE_ENQUIRY", "productHint": "product name here"}
-- Ask about delivery: {"intent": "DELIVERY_ENQUIRY"}
+- Ask about delivery or shipping: {"intent": "DELIVERY_ENQUIRY"}
+- Track an order / ask order status: {"intent": "TRACK_ORDER"}
+- Speak to a human / contact the vendor: {"intent": "SPEAK_TO_VENDOR"}
+- Ask for help / available commands: {"intent": "HELP"}
 - Greeting (hi, hello, hey): {"intent": "GREETING"}
 - Remove item from cart: {"intent": "MODIFY_CART", "action": "remove", "productHint": "product name"}
 - Change quantity in cart: {"intent": "MODIFY_CART", "action": "update_quantity", "productHint": "product name", "quantity": 3}
@@ -81,6 +87,29 @@ Rules:
 - REPEAT_ORDER: "same as last time", "my usual", "last order", "order again", "the usual"
 - SHOW_CHEAPEST: "cheapest", "most affordable", "cheapest thing", "wetin dey affordable"
 - SHOW_POPULAR: "most popular", "what people order most", "best seller", "what's your best"
+- TRACK_ORDER: any question about order tracking, delivery status, or order progress
+  "Where is my order?" → {"intent": "TRACK_ORDER"}
+  "Has my order been shipped?" → {"intent": "TRACK_ORDER"}
+  "When will my order arrive?" → {"intent": "TRACK_ORDER"}
+  "What's my order status?" → {"intent": "TRACK_ORDER"}
+  "I want to track my delivery" → {"intent": "TRACK_ORDER"}
+  "How do I track my delivery?" → {"intent": "TRACK_ORDER"}
+  "Order status" → {"intent": "TRACK_ORDER"}
+  "Check my order" → {"intent": "TRACK_ORDER"}
+- SPEAK_TO_VENDOR: any request to speak to a human, contact vendor, or get human help
+  "I want to speak to someone" → {"intent": "SPEAK_TO_VENDOR"}
+  "Can I talk to a person?" → {"intent": "SPEAK_TO_VENDOR"}
+  "Connect me to the vendor" → {"intent": "SPEAK_TO_VENDOR"}
+  "I need to speak to a human" → {"intent": "SPEAK_TO_VENDOR"}
+  "Contact customer service" → {"intent": "SPEAK_TO_VENDOR"}
+  "Speak to vendor" → {"intent": "SPEAK_TO_VENDOR"}
+- HELP: any request for help, assistance, or available commands
+  "Help me" → {"intent": "HELP"}
+  "I need help" → {"intent": "HELP"}
+  "What can you do?" → {"intent": "HELP"}
+  "How does this work?" → {"intent": "HELP"}
+  "What are the commands?" → {"intent": "HELP"}
+  "I'm confused" → {"intent": "HELP"}
 - MENU intent — any request to browse, see, or show available items:
   "Let me see your menu" → {"intent": "MENU"}
   "Show me the menu" → {"intent": "MENU"}
