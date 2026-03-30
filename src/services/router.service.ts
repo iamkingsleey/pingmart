@@ -39,9 +39,11 @@ import { Language } from '../i18n';
 
 const ROUTER_STATE_TTL_SECS = 30 * 60; // 30 minutes
 
-// Store codes are 4–20 alphanumeric characters (per spec). Shorter strings are
-// more likely to be regular words ("OK", "NO") so we don't attempt a code lookup.
-const STORE_CODE_REGEX = /^[A-Z0-9]{4,20}$/;
+// Store codes are 4–20 characters: uppercase letters, digits, and underscores.
+// Examples: "JAY02", "FRESHY_NG", "SHOP123".
+// Must START with a letter or digit (not underscore) to avoid false matches on
+// keyboard noise. Pure short words like "OK" or "NO" fall below the 4-char floor.
+const STORE_CODE_REGEX = /^[A-Z0-9][A-Z0-9_]{3,19}$/;
 
 // ─── Public Entry Point ───────────────────────────────────────────────────────
 
