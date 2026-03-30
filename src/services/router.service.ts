@@ -4,13 +4,16 @@
  * ALL incoming messages to the single Pingmart WhatsApp number flow through here.
  * The router determines who is messaging and what to show them, in strict priority order:
  *
- *  1. Dedup — ignore replayed Meta messages or Bull stall-retries
- *  2. Vendor by ownerPhone   → vendor dashboard (Phase 5)
- *  3. Notification number    → vendor staff handler
- *  4. Valid store code       → start/restart customer shopping session
- *  5. Active customer session → continue existing session
- *  6. v1 vendor by whatsappNumber (backward-compat) → vendor status commands
- *  7. Unknown sender         → "shop or sell?" screen
+ *  1. Dedup          — ignore replayed Meta messages or Bull stall-retries
+ *  2. Router state   — pending LANG_INIT / SHOP_OR_SELL replies
+ *  3. Valid store code → start/switch customer shopping session  ← HIGHEST PRIORITY
+ *                        (runs before vendor checks so any phone, including a vendor
+ *                         owner, can tap a store link and land in the correct store)
+ *  4. Vendor by ownerPhone   → vendor dashboard (Phase 5)
+ *  5. Notification number    → vendor staff handler
+ *  6. Active customer session → continue existing session
+ *  7. v1 vendor by whatsappNumber (backward-compat) → vendor status commands
+ *  8. Unknown sender         → "shop or sell?" screen
  *
  * "shop or sell?" state is tracked in Redis (not DB) — it only lasts until the
  * sender makes a choice, so a 30-minute TTL is more than enough.
@@ -28,7 +31,7 @@ import { startVendorOnboarding, handleVendorOnboarding } from './vendor-onboardi
 import { handleVendorDashboard } from './vendor-management.service';
 import { customerRepository } from '../repositories/customer.repository';
 import { logger, maskPhone } from '../utils/logger';
-import { ConversationState } from '../types';
+import { ConversationState, SessionData } from '../types';
 import { formatNaira } from '../utils/formatters';
 import { Language } from '../i18n';
 
@@ -82,7 +85,27 @@ export async function routeIncomingMessage(
     return;
   }
 
-  // ── 3. Sender is a registered vendor (v2 ownerPhone field) ────────────────
+  // ── 3. Message is a valid store code (highest-priority customer check) ──────
+  // Store code detection runs BEFORE vendor-identity checks. This ensures that
+  // anyone — including a vendor owner — can tap a store link and land in the
+  // correct shopping session without their vendor role intercepting the request.
+  // startCustomerSession handles same-store re-entry and cross-store switching.
+  const potentialCode = message.trim().toUpperCase();
+  if (STORE_CODE_REGEX.test(potentialCode)) {
+    const vendorByCode = await prisma.vendor.findFirst({
+      where: { storeCode: potentialCode, isActive: true },
+    });
+    if (vendorByCode) {
+      logger.info('Router → customer session (store code)', {
+        from: maskPhone(senderPhone),
+        storeCode: potentialCode,
+      });
+      await startCustomerSession(senderPhone, vendorByCode);
+      return;
+    }
+  }
+
+  // ── 4. Sender is a registered vendor (v2 ownerPhone field) ────────────────
   // IMPORTANT: Before routing to vendor dashboard, check whether this phone
   // also has an active customer checkout session. A vendor owner shopping at
   // their own store (or another store) must stay in the customer flow —
@@ -126,7 +149,7 @@ export async function routeIncomingMessage(
     return;
   }
 
-  // ── 4. Sender is a notification number (vendor staff) ─────────────────────
+  // ── 5. Sender is a notification number (vendor staff) ─────────────────────
   const notifRecord = await prisma.vendorNotificationNumber.findFirst({
     where: { phone: senderPhone, isActive: true },
     include: { vendor: true },
@@ -135,22 +158,6 @@ export async function routeIncomingMessage(
     logger.info('Router → vendor staff (notification number)', { from: maskPhone(senderPhone) });
     await handleVendorStaffMessage(senderPhone, message, notifRecord.vendor, notifRecord.isPrimary);
     return;
-  }
-
-  // ── 5. Message is a valid store code ─────────────────────────────────────
-  const potentialCode = message.trim().toUpperCase();
-  if (STORE_CODE_REGEX.test(potentialCode)) {
-    const vendorByCode = await prisma.vendor.findFirst({
-      where: { storeCode: potentialCode, isActive: true },
-    });
-    if (vendorByCode) {
-      logger.info('Router → customer session (store code)', {
-        from: maskPhone(senderPhone),
-        storeCode: potentialCode,
-      });
-      await startCustomerSession(senderPhone, vendorByCode);
-      return;
-    }
   }
 
   // ── 6. Active customer session exists ─────────────────────────────────────
@@ -262,12 +269,21 @@ async function handleVendorStaffMessage(
 }
 
 /**
- * Starts or restarts a customer's shopping session for a specific vendor.
+ * Starts or switches a customer's shopping session for a specific vendor.
  *
  * Priority:
- *  1. Paused store → "not taking orders" message
- *  2. Returning customer (VendorCustomer record exists) → personalized welcome with last-order reorder prompt
- *  3. New customer → reset session and let processIncomingMessage handle language selection + menu
+ *  1. Paused store      → "not taking orders" message, exit
+ *  2. Same-store re-entry (customer already has an active session for this vendor)
+ *                       → show menu without resetting (language + cart preserved)
+ *  3. Cross-store switch (active session exists for a DIFFERENT vendor)
+ *                       → log switch, notify if previous cart had items, then continue
+ *  4. Returning customer (VendorCustomer record for THIS vendor exists + completed order)
+ *                       → personalised welcome with last-order reorder prompt
+ *  5. New customer or first visit to this store
+ *                       → reset session, delegate to processIncomingMessage for lang + menu
+ *
+ * Language preference is stored on the Customer record and is never touched here —
+ * it persists automatically across store switches.
  */
 async function startCustomerSession(phone: string, vendor: Vendor): Promise<void> {
   // ── 1. Paused store ────────────────────────────────────────────────────────
@@ -281,7 +297,51 @@ async function startCustomerSession(phone: string, vendor: Vendor): Promise<void
     return;
   }
 
-  // ── 2. Returning customer check ────────────────────────────────────────────
+  // ── 2 & 3. Check for an existing active session (any vendor) ──────────────
+  // Must run before creating/resetting so we can detect same-store re-entry
+  // (no reset needed) and cross-store switches (notify + clear old cart).
+  const existingSession = await prisma.conversationSession.findFirst({
+    where: { whatsappNumber: phone, expiresAt: { gt: new Date() } },
+    orderBy: { updatedAt: 'desc' },
+  });
+
+  if (existingSession) {
+    // ── 2. Same store re-entry ─────────────────────────────────────────────
+    // Customer tapped the same store link they're already in — treat as
+    // returning to the homepage. Do NOT reset; preserve their cart and state.
+    if (existingSession.vendorId === vendor.id) {
+      logger.info('Router → same-store re-entry, showing menu (session preserved)', {
+        from: maskPhone(phone),
+        storeCode: vendor.storeCode,
+      });
+      await processIncomingMessage(phone, 'MENU', vendor.whatsappNumber, undefined);
+      return;
+    }
+
+    // ── 3. Cross-store switch ──────────────────────────────────────────────
+    const existingData = existingSession.sessionData as unknown as SessionData | undefined;
+    const hadItems = (existingData?.cart?.length ?? 0) > 0;
+    const oldVendor = await vendorRepository.findById(existingSession.vendorId);
+
+    logger.info('[SESSION] Customer switched stores', {
+      from: maskPhone(phone),
+      oldStore: oldVendor?.storeCode ?? existingSession.vendorId,
+      newStore: vendor.storeCode ?? vendor.id,
+    });
+
+    // Inform the customer their old cart is gone, but only if there was something in it.
+    if (hadItems && oldVendor) {
+      await messageQueue.add({
+        to: phone,
+        message:
+          `Switching you to *${vendor.businessName}* 🛍️. ` +
+          `Your previous cart from *${oldVendor.businessName}* has been cleared.`,
+      });
+    }
+    // Fall through to paths 4 & 5 to start the new session.
+  }
+
+  // ── 4. Returning customer to THIS specific store ───────────────────────────
   const customer = await prisma.customer.findUnique({ where: { whatsappNumber: phone } });
   if (customer) {
     const vendorCustomer = await prisma.vendorCustomer.findUnique({
@@ -313,7 +373,7 @@ async function startCustomerSession(phone: string, vendor: Vendor): Promise<void
     }
   }
 
-  // ── 3. New customer or first visit to this store ───────────────────────────
+  // ── 5. New customer or first visit to this store ───────────────────────────
   await sessionRepository.reset(phone, vendor.id);
   await processIncomingMessage(phone, 'MENU', vendor.whatsappNumber, undefined);
 }
