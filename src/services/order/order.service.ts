@@ -198,7 +198,8 @@ export async function processIncomingMessage(
           await enqueue(from, t('no_items_available', 'en', { vendorName: vendor.businessName }));
           return;
         }
-        await processLanguageSelection(from, rawMessage, vendor, products);
+        const storeStatusEarly = getStoreStatus(vendor);
+        await processLanguageSelection(from, rawMessage, vendor, products, storeStatusEarly);
         return;
       }
 
@@ -208,28 +209,10 @@ export async function processIncomingMessage(
       return;
     }
 
-    // ── Working hours gate ────────────────────────────────────────────────────
-    // Only reached for customers who have already chosen a language.
+    // ── Business hours — soft notice only, never blocks ──────────────────────
+    // Store hours affect the notice shown to the customer, nothing else.
+    // Browsing, ordering, and payment all work regardless of the time.
     const storeStatus = getStoreStatus(vendor);
-    if (!storeStatus.isOpen) {
-      await messageQueue.add(
-        {
-          to: from,
-          message:
-            `Hi! 👋 We're currently closed.\n\n` +
-            `🕐 We open at *${storeStatus.opensAt}* (Lagos time).\n\n` +
-            `Your message has been noted — feel free to browse our menu when we open. Type *MENU* anytime. 😊`,
-        },
-        { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true },
-      );
-      await offHoursContactRepository.record(from, vendor.id);
-      logger.info('Off-hours message received', {
-        customer: maskPhone(from),
-        vendorId: vendor.id,
-        storeStatus: storeStatus.message,
-      });
-      return;
-    }
 
     const products = await productRepository.findAvailableByVendor(vendor.id);
     const language = (customer.language as Language) ?? 'en';
@@ -253,8 +236,24 @@ export async function processIncomingMessage(
 
     // ── Language selection in progress ────────────────────────────────────
     if (currentState === ConversationState.LANGUAGE_SELECTION) {
-      await processLanguageSelection(from, rawMessage, vendor, products);
+      await processLanguageSelection(from, rawMessage, vendor, products, storeStatus);
       return;
+    }
+
+    // ── Soft closed notice — shown once on first entry, never blocks ─────────
+    // If the store is closed and the customer just arrived (IDLE / no session),
+    // prepend a soft notice then continue straight into the full shopping flow.
+    if (!storeStatus.isOpen && (currentState === ConversationState.IDLE || !session)) {
+      await offHoursContactRepository.record(from, vendor.id);
+      await enqueue(
+        from,
+        `🕐 We're currently closed. We open at *${storeStatus.opensAt}* (Lagos time).\n\n` +
+        `But feel free to browse and place your order — *${vendor.businessName}* will attend to it as soon as we're back open! 😊`,
+      );
+      // Mark the session so the off-hours flag is carried through to order confirmation
+      const closedData: SessionData = { cart: [], orderedWhileClosed: true, storeOpensAt: storeStatus.opensAt };
+      await sessionRepository.upsert(from, vendor.id, ConversationState.BROWSING, closedData);
+      currentData = closedData;
     }
 
     logger.info('Processing message', { ...ctx, state: currentState, lang: language, msgLen: rawMessage.length });
@@ -965,6 +964,7 @@ async function processLanguageSelection(
   message: string,
   vendor: Vendor,
   products: import('@prisma/client').Product[],
+  storeStatus: import('../../utils/working-hours').StoreStatus,
 ): Promise<void> {
   const choice = message.trim();
   const language = LANGUAGE_CODES[choice];
@@ -982,32 +982,31 @@ async function processLanguageSelection(
   // 1. Confirm language choice in their language
   await enqueue(from, t('lang_selected', language));
 
-  // 2. Bug 2 fix: send a clear store confirmation so the customer knows
-  //    exactly which store they reached and what to expect.
+  // 2. Send store confirmation (name, description, hours, payment)
   const storeConfirmMsg = buildStoreConfirmMessage(vendor);
   await enqueue(from, storeConfirmMsg);
 
-  // 3. Check business hours now (language is set, gate can apply)
-  const storeStatus = getStoreStatus(vendor);
+  // 3. If the store is currently closed, show a soft notice then continue.
+  //    Never block — the customer should always be able to browse and order.
+  let sessionData: SessionData = { cart: [] };
   if (!storeStatus.isOpen) {
     await offHoursContactRepository.record(from, vendor.id);
     await enqueue(
       from,
-      `🕐 We're currently closed and open at *${storeStatus.opensAt}* (Lagos time).\n\n` +
-      `Your message has been noted — we'll be in touch when we open. Type *MENU* anytime to browse. 😊`,
+      `🕐 We're currently closed. We open at *${storeStatus.opensAt}* (Lagos time).\n\n` +
+      `But feel free to browse and place your order — *${vendor.businessName}* will attend to it as soon as we're back open! 😊`,
     );
-    await sessionRepository.upsert(from, vendor.id, ConversationState.IDLE, { cart: [] });
-    return;
+    sessionData = { cart: [], orderedWhileClosed: true, storeOpensAt: storeStatus.opensAt };
   }
 
-  // 4. Show the catalogue
+  // 4. Show the catalogue and enter BROWSING state
   const isHybrid = vendor.vendorType === 'HYBRID';
   const allDigital = products.every((p) => p.productType === 'DIGITAL');
   const welcomeMsg = allDigital
     ? msgDigitalWelcome(vendor.businessName, products, language, vendor.description ?? undefined)
     : msgPhysicalWelcome(vendor.businessName, products, isHybrid, language, vendor.description ?? undefined);
 
-  await sessionRepository.upsert(from, vendor.id, ConversationState.BROWSING, { cart: [] });
+  await sessionRepository.upsert(from, vendor.id, ConversationState.BROWSING, sessionData);
   await enqueue(from, welcomeMsg);
 }
 
@@ -1266,10 +1265,19 @@ export async function handlePaymentConfirmed(paystackReference: string): Promise
   const customerRecord = await customerRepository.findByWhatsAppNumber(customerPhone);
   const language = (customerRecord?.language as Language) ?? 'en';
 
+  // Read off-hours flag from session BEFORE reset — used to tailor confirmation messages
+  const activeSession = await sessionRepository.findActive(customerPhone, vendor.id);
+  const sessionData = activeSession?.sessionData as unknown as SessionData | undefined;
+  const orderedWhileClosed = sessionData?.orderedWhileClosed ?? false;
+  const storeOpensAt = sessionData?.storeOpensAt;
+
   if (order.orderType === 'DIGITAL') {
     await handleDigitalPaymentConfirmed(orderDetail, vendor.whatsappNumber, customerPhone, language);
   } else {
-    await handlePhysicalPaymentConfirmed(orderDetail, vendor, customerPhone, language, order.status === 'PAID');
+    await handlePhysicalPaymentConfirmed(
+      orderDetail, vendor, customerPhone, language,
+      order.status === 'PAID', orderedWhileClosed, storeOpensAt,
+    );
   }
 
   // Update VendorCustomer analytics — increment order count and record last order time
@@ -1290,6 +1298,8 @@ async function handlePhysicalPaymentConfirmed(
   customerPhone: string,
   language: Language,
   isBankTransfer = false,
+  orderedWhileClosed = false,
+  storeOpensAt?: string,
 ): Promise<void> {
   const cart = order.orderItems.map((oi) => ({
     productId: oi.productId,
@@ -1299,11 +1309,19 @@ async function handlePhysicalPaymentConfirmed(
     productType: oi.product.productType as ProductType,
   }));
 
-  await enqueue(customerPhone, msgPhysicalOrderConfirmedCustomer(order.id, vendor.businessName, cart, language));
+  await enqueue(
+    customerPhone,
+    msgPhysicalOrderConfirmedCustomer(
+      order.id, vendor.businessName, cart, language, orderedWhileClosed, storeOpensAt,
+    ),
+  );
 
-  // Build vendor notification — if bank transfer, include payment-confirmed note
-  const vendorNote = isBankTransfer ? `\n\n💳 *Payment method:* Bank transfer (confirmed)` : '';
-  const vendorMsg = msgNewPhysicalOrder(order) + vendorNote;
+  // Build vendor notification — include off-hours flag and bank-transfer note if applicable
+  const offHoursNote = orderedWhileClosed
+    ? `\n\n⏰ *Order placed while store was closed* — please attend to this when you resume.`
+    : '';
+  const bankNote = isBankTransfer ? `\n\n💳 *Payment method:* Bank transfer (confirmed)` : '';
+  const vendorMsg = msgNewPhysicalOrder(order) + offHoursNote + bankNote;
 
   await notifyVendorNumbers(vendor.id, vendor.whatsappNumber, vendorMsg, [
     { id: `CONFIRM ${formatOrderId(order.id)}`, title: '✅ Confirm' },

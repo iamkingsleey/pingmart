@@ -140,12 +140,17 @@ export function msgPhysicalOrderConfirmedCustomer(
   businessName: string,
   cart: CartItem[],
   lang: Language = 'en',
+  orderedWhileClosed = false,
+  storeOpensAt?: string,
 ): string {
+  const offHoursNote = orderedWhileClosed
+    ? `\n\n🕐 *Your order has been received and noted.* Since the store is currently closed, *${businessName}* will process and confirm your order when they resume at *${storeOpensAt ?? 'opening time'}*. You'll receive an update here on WhatsApp.`
+    : '';
   return t('order_confirmed_customer', lang, {
     orderId: formatOrderId(orderId),
     vendorName: businessName,
     cartSummary: formatCartSummary(cart),
-  });
+  }) + offHoursNote;
 }
 
 // ─── Flow A: Physical Orders — Status Updates ─────────────────────────────────

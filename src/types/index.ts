@@ -135,6 +135,15 @@ export interface SessionData {
   // ── Payment method flow ───────────────────────────────────────────────────
   /** 'paystack_transfer' | 'bank_transfer' — chosen or defaulted at checkout */
   chosenPaymentMethod?: string;
+
+  // ── Off-hours flag ────────────────────────────────────────────────────────
+  /**
+   * Set to true when the customer placed an order while the store was closed.
+   * Used to add an off-hours note to the order confirmation and vendor alert.
+   */
+  orderedWhileClosed?: boolean;
+  /** Human-readable opening time stored at order time, e.g. "9:00 AM" */
+  storeOpensAt?: string;
 }
 
 // ─── API Contracts ────────────────────────────────────────────────────────────
