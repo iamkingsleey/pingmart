@@ -167,7 +167,24 @@ export async function processIncomingMessage(
     const vendor = await vendorRepository.findByWhatsAppNumber(vendorWhatsAppNumber);
     if (!vendor?.isActive) { logger.warn('Message for unknown/inactive vendor', ctx); return; }
 
-    // ── Working hours gate — respond before any other processing ─────────────
+    const { customer } = await customerRepository.findOrCreate(from);
+
+    // ── Bug 1 fix: Language selection is ALWAYS the first interaction ─────────
+    // Check language before the working-hours gate so a brand-new customer never
+    // sees the closed-store message before they've even chosen a language.
+    if (!customer.languageSet) {
+      // Only set LANGUAGE_SELECTION state if there isn't already an active one —
+      // avoids clobbering the session on repeated messages before they reply.
+      const existingSession = await sessionRepository.findActive(from, vendor.id);
+      if (!existingSession || existingSession.state !== ConversationState.LANGUAGE_SELECTION) {
+        await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { cart: [] });
+      }
+      await sendLanguageSelectionList(from, vendor.businessName);
+      return;
+    }
+
+    // ── Working hours gate ────────────────────────────────────────────────────
+    // Only runs for customers who have already chosen a language.
     const storeStatus = getStoreStatus(vendor);
     if (!storeStatus.isOpen) {
       await messageQueue.add(
@@ -189,8 +206,6 @@ export async function processIncomingMessage(
       return;
     }
 
-    const { customer } = await customerRepository.findOrCreate(from);
-
     // Upsert VendorCustomer junction — creates on first interaction, no-op afterwards
     await prisma.vendorCustomer.upsert({
       where: { vendorId_customerId: { vendorId: vendor.id, customerId: customer.id } },
@@ -209,13 +224,6 @@ export async function processIncomingMessage(
     const session = await sessionRepository.findActive(from, vendor.id);
     const currentState = (session?.state ?? ConversationState.IDLE) as ConversationState;
     let currentData = (session?.sessionData ?? { cart: [] }) as unknown as SessionData;
-
-    // ── Customer hasn't chosen a language yet → show language selection ───
-    if (!customer.languageSet && !session) {
-      await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { cart: [] });
-      await sendLanguageSelectionList(from, vendor.businessName);
-      return;
-    }
 
     // ── "LANGUAGE" / "CHANGE LANGUAGE" at any time → re-open language menu ─
     if (isLanguageChangeKeyword(rawMessage)) {
@@ -953,10 +961,28 @@ async function processLanguageSelection(
   await customerRepository.updateLanguage(from, language);
   logger.info('Language selected', { from: maskPhone(from), language });
 
-  // Confirm in their chosen language
+  // 1. Confirm language choice in their language
   await enqueue(from, t('lang_selected', language));
 
-  // Show the catalog immediately
+  // 2. Bug 2 fix: send a clear store confirmation so the customer knows
+  //    exactly which store they reached and what to expect.
+  const storeConfirmMsg = buildStoreConfirmMessage(vendor);
+  await enqueue(from, storeConfirmMsg);
+
+  // 3. Check business hours now (language is set, gate can apply)
+  const storeStatus = getStoreStatus(vendor);
+  if (!storeStatus.isOpen) {
+    await offHoursContactRepository.record(from, vendor.id);
+    await enqueue(
+      from,
+      `🕐 We're currently closed and open at *${storeStatus.opensAt}* (Lagos time).\n\n` +
+      `Your message has been noted — we'll be in touch when we open. Type *MENU* anytime to browse. 😊`,
+    );
+    await sessionRepository.upsert(from, vendor.id, ConversationState.IDLE, { cart: [] });
+    return;
+  }
+
+  // 4. Show the catalogue
   const isHybrid = vendor.vendorType === 'HYBRID';
   const allDigital = products.every((p) => p.productType === 'DIGITAL');
   const welcomeMsg = allDigital
@@ -965,6 +991,38 @@ async function processLanguageSelection(
 
   await sessionRepository.upsert(from, vendor.id, ConversationState.BROWSING, { cart: [] });
   await enqueue(from, welcomeMsg);
+}
+
+/**
+ * Builds the "you're now in [store]" confirmation message shown immediately
+ * after a customer selects their language — before the product catalogue.
+ * Includes store name, optional description, hours, and payment method.
+ */
+function buildStoreConfirmMessage(vendor: Vendor): string {
+  const paymentLabel: Record<string, string> = {
+    paystack: 'Card / Transfer (Paystack)',
+    bank:     'Bank Transfer',
+    both:     'Card / Transfer (Paystack) or Bank Transfer',
+  };
+  const payment = paymentLabel[vendor.acceptedPayments ?? 'both'] ?? 'Bank Transfer';
+
+  const days = (vendor.workingDays ?? '1,2,3,4,5,6')
+    .split(',')
+    .map((d) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][Number(d.trim())] ?? d)
+    .join(', ');
+  const hours = `${vendor.workingHoursStart ?? '08:00'} – ${vendor.workingHoursEnd ?? '21:00'}`;
+
+  const descLine = vendor.description?.trim() ? `\n_${vendor.description.trim()}_\n` : '';
+
+  // Keep the store-confirmed text in English for now — vendor-facing info
+  // (hours, payment) is always stored in English. A future task can translate
+  // the labels once vendor language preference is tracked in the DB.
+  return (
+    `🛍️ *Welcome to ${vendor.businessName}!*\n` +
+    descLine +
+    `\n🕐 *Hours:* ${days}, ${hours}` +
+    `\n💳 *Payment:* ${payment}`
+  );
 }
 
 // ─── State Machine Router ─────────────────────────────────────────────────────

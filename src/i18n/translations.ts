@@ -56,7 +56,7 @@ export const translations: Record<Language, Record<string, string>> = {
       '4. Yorùbá\n' +
       '5. Hausa\n\n' +
       'Reply with a number (1–5).',
-    lang_selected: "✅ Great! We'll chat in English. 🇳🇬\n\nType anything to see our catalog.",
+    lang_selected: "✅ Great! We'll chat in English from now on. 🇳🇬",
     invalid_lang_choice: 'Please reply with a number between 1 and 5 to choose your language.',
 
     // ── General ───────────────────────────────────────────────────────────
@@ -183,7 +183,7 @@ export const translations: Record<Language, Record<string, string>> = {
       '4. Yorùbá\n' +
       '5. Hausa\n\n' +
       'Reply with a number (1–5).',
-    lang_selected: '✅ Oya! We go yarn for Pidgin. 🇳🇬\n\nType anything to see wetin we get.',
+    lang_selected: '✅ Oya! We go yarn for Pidgin from now. 🇳🇬',
     invalid_lang_choice: 'Abeg reply with number 1 to 5 to choose your language.',
 
     fallback:
@@ -304,7 +304,7 @@ export const translations: Record<Language, Record<string, string>> = {
       '4. Yorùbá\n' +
       '5. Hausa\n\n' +
       'Reply with a number (1–5).',
-    lang_selected: '✅ Ọ dị mma! Anyị ga-asụ Igbo. 🇳🇬\n\nTinye ihe ọ bụla ịhụ ihe anyị nwere.',
+    lang_selected: '✅ Ọ dị mma! Anyị ga-asụ Igbo site ugbu a. 🇳🇬',
     invalid_lang_choice:
       'Biko zaghachi ọnụọgụ dị n\'etiti 1 na 5 ịhọrọ asụsụ gị.',
 
@@ -429,7 +429,7 @@ export const translations: Record<Language, Record<string, string>> = {
       '4. Yorùbá\n' +
       '5. Hausa\n\n' +
       'Reply with a number (1–5).',
-    lang_selected: '✅ Dáadáa! A ó sọ Yorùbá. 🇳🇬\n\nTẹ ohunkohun láti rí ohun tí a ní.',
+    lang_selected: '✅ Dáadáa! A ó sọ Yorùbá lati isisiyi. 🇳🇬',
     invalid_lang_choice:
       'Jọwọ dáhùn pẹ̀lú nọ́mbà láàárín 1 àti 5 láti yan èdè rẹ.',
 
@@ -555,7 +555,7 @@ export const translations: Record<Language, Record<string, string>> = {
       '4. Yorùbá\n' +
       '5. Hausa\n\n' +
       'Reply with a number (1–5).',
-    lang_selected: '✅ Kyau! Za mu yi magana da Hausa. 🇳🇬\n\nTẹ kowane abu don ganin abin da muke da shi.',
+    lang_selected: '✅ Kyau! Za mu yi magana da Hausa daga yanzu. 🇳🇬',
     invalid_lang_choice:
       'Don Allah amsa da lamba tsakanin 1 da 5 don zaɓar harshenka.',
 
