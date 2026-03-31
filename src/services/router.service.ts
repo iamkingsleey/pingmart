@@ -88,6 +88,17 @@ export async function routeIncomingMessage(
     return;
   }
 
+  // ── 2b. Router button IDs — handle even without Redis state ──────────────
+  // If the SHOP_OR_SELL Redis key expired between the time we sent the buttons
+  // and the time the user tapped (> 30 min gap, or a Redis flush), we still
+  // want to honour the button tap rather than falling through to unrecognised
+  // sender logic and showing the language screen again.
+  const msgUpper = message.trim().toUpperCase();
+  if (msgUpper === 'SELL_ON_PINGMART' || msgUpper === 'SHOP_FROM_STORE') {
+    await handleShopOrSellReply(senderPhone, message);
+    return;
+  }
+
   // ── 3. Message is a valid store code (highest-priority customer check) ──────
   // Store code detection runs BEFORE vendor-identity checks so that anyone —
   // including a vendor owner — can tap a store link and land correctly.
@@ -96,8 +107,13 @@ export async function routeIncomingMessage(
   // vendor accessing their dashboard (e.g. tapping their own share link).
   // If it is a DIFFERENT vendor's store, stamp them as a customer for that
   // store — a vendor can also shop at a competitor's store.
+  //
+  // Guard: router button IDs (SELL_ON_PINGMART, SHOP_FROM_STORE) technically
+  // match STORE_CODE_REGEX. Exclude them explicitly so a stale/missing Redis
+  // SHOP_OR_SELL state never misroutes a button tap as a store code lookup.
+  const ROUTER_BUTTON_IDS = new Set(['SELL_ON_PINGMART', 'SHOP_FROM_STORE']);
   const potentialCode = message.trim().toUpperCase();
-  if (STORE_CODE_REGEX.test(potentialCode)) {
+  if (!ROUTER_BUTTON_IDS.has(potentialCode) && STORE_CODE_REGEX.test(potentialCode)) {
     const vendorByCode = await prisma.vendor.findFirst({
       where: { storeCode: potentialCode, isActive: true },
     });
@@ -207,7 +223,9 @@ export async function routeIncomingMessage(
  * Clears the Redis state so the next message goes through normal routing.
  */
 async function handleShopOrSellReply(phone: string, message: string): Promise<void> {
-  const choice = message.trim();
+  // Normalise: strip whitespace and force uppercase so comparisons are never
+  // tripped up by casing differences or invisible Unicode characters.
+  const choice = message.trim().toUpperCase();
   await redis.del(`router:state:${phone}`);
 
   // Accept both button IDs (primary) and legacy numeric replies (fallback)
@@ -231,7 +249,11 @@ async function handleShopOrSellReply(phone: string, message: string): Promise<vo
     return;
   }
 
-  // Unrecognised reply — show the screen again
+  // Unrecognised reply — log and show the screen again
+  logger.warn('Router: unrecognised SHOP_OR_SELL reply', {
+    from: maskPhone(phone),
+    raw: JSON.stringify(message),
+  });
   await showShopOrSellScreen(phone);
 }
 
