@@ -89,16 +89,29 @@ export async function routeIncomingMessage(
   }
 
   // ── 3. Message is a valid store code (highest-priority customer check) ──────
-  // Store code detection runs BEFORE vendor-identity checks. This ensures that
-  // anyone — including a vendor owner — can tap a store link and land in the
-  // correct shopping session without their vendor role intercepting the request.
-  // startCustomerSession handles same-store re-entry and cross-store switching.
+  // Store code detection runs BEFORE vendor-identity checks so that anyone —
+  // including a vendor owner — can tap a store link and land correctly.
+  //
+  // Special case: if the store code is the vendor's OWN store, treat it as the
+  // vendor accessing their dashboard (e.g. tapping their own share link).
+  // If it is a DIFFERENT vendor's store, stamp them as a customer for that
+  // store — a vendor can also shop at a competitor's store.
   const potentialCode = message.trim().toUpperCase();
   if (STORE_CODE_REGEX.test(potentialCode)) {
     const vendorByCode = await prisma.vendor.findFirst({
       where: { storeCode: potentialCode, isActive: true },
     });
     if (vendorByCode) {
+      if (vendorByCode.ownerPhone === senderPhone) {
+        // Vendor tapped their own store link → vendor dashboard
+        logger.info('Router → vendor dashboard (own store code)', {
+          from: maskPhone(senderPhone),
+          storeCode: potentialCode,
+        });
+        await handleVendorMessage(senderPhone, message, vendorByCode);
+        return;
+      }
+      // Different vendor's store → customer flow
       logger.info('Router → customer session (store code)', {
         from: maskPhone(senderPhone),
         storeCode: potentialCode,
@@ -109,38 +122,33 @@ export async function routeIncomingMessage(
   }
 
   // ── 4. Sender is a registered vendor (v2 ownerPhone field) ────────────────
-  // IMPORTANT: Before routing to vendor dashboard, check whether this phone
-  // also has an active customer checkout session. A vendor owner shopping at
-  // their own store (or another store) must stay in the customer flow —
-  // routing based on phone alone would hijack their checkout with vendor commands.
+  // Only route to the vendor dashboard when there is NO active customer session
+  // at a DIFFERENT vendor's store. Role is determined by the store code the
+  // customer sent — not re-evaluated on every subsequent message.
+  //
+  // This prevents the dashboard from hijacking a vendor who:
+  //   • is mid-language-selection after sending a competitor's store code
+  //   • is browsing / ordering at another store
+  //   • has any live session state at a store that is not their own
   const vendorByOwnerPhone = await prisma.vendor.findUnique({
     where: { ownerPhone: senderPhone },
   });
   if (vendorByOwnerPhone) {
-    // Look for a live customer session in an active (non-IDLE, non-BROWSING) state.
-    // IDLE / BROWSING are low-commitment states where falling through to vendor
-    // handling is acceptable. ORDERING, AWAITING_*, AWAITING_PAYMENT etc. are
-    // in-progress checkout states that must not be interrupted.
     const activeCustomerSession = await prisma.conversationSession.findFirst({
       where: { whatsappNumber: senderPhone, expiresAt: { gt: new Date() } },
       orderBy: { updatedAt: 'desc' },
     });
 
-    const checkoutStates: string[] = [
-      ConversationState.ORDERING,
-      ConversationState.AWAITING_ITEM_NOTE,
-      ConversationState.AWAITING_ADDRESS,
-      ConversationState.AWAITING_PAYMENT,
-      ConversationState.COMPLETED,
-    ];
-
-    if (activeCustomerSession && checkoutStates.includes(activeCustomerSession.state)) {
-      // Vendor-owner is mid-checkout — route to customer handler, not vendor dashboard.
+    // Any active session at a store that is NOT the vendor's own store means
+    // this sender is currently acting as a customer — protect every state
+    // (LANGUAGE_SELECTION, BROWSING, ORDERING, AWAITING_*, etc.).
+    if (activeCustomerSession && activeCustomerSession.vendorId !== vendorByOwnerPhone.id) {
       const sessionVendor = await vendorRepository.findById(activeCustomerSession.vendorId);
       if (sessionVendor) {
-        logger.info('Router → customer checkout session (vendor owner shopping)', {
+        logger.info('Router → customer session (vendor shopping at different store)', {
           from: maskPhone(senderPhone),
           state: activeCustomerSession.state,
+          sessionStore: sessionVendor.storeCode ?? sessionVendor.id,
         });
         await processIncomingMessage(senderPhone, message, sessionVendor.whatsappNumber, undefined);
         return;
