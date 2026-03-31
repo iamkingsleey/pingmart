@@ -209,7 +209,17 @@ export function handlePhysicalOrdering(
     return {
       messages: [t('cart_cleared', lang)],
       nextState: ConversationState.BROWSING,
-      nextData: { cart: [], activeOrderType: OrderType.PHYSICAL },
+      nextData: {
+        ...currentData,
+        cart: [],
+        activeOrderType: OrderType.PHYSICAL,
+        pendingProductId: undefined,
+        pendingProductName: undefined,
+        pendingProductPrice: undefined,
+        pendingNote: undefined,
+        pendingNoteForProductId: undefined,
+        pendingMultiQueue: undefined,
+      },
     };
   }
 

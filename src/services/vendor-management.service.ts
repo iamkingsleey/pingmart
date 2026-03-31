@@ -392,7 +392,7 @@ async function completeAddProduct(phone: string, message: string, vendor: Vendor
     return;
   }
 
-  const priceNaira = parseInt(priceStr, 10);
+  const priceNaira = parseInt(priceStr.replace(/[₦,\s]/g, ''), 10);
   if (isNaN(priceNaira) || priceNaira <= 0) {
     await send(
       phone,
@@ -553,7 +553,7 @@ async function completeUpdatePrice(
   vendor: Vendor,
   state: VendorCmdState,
 ): Promise<void> {
-  const priceNaira = parseInt(norm, 10);
+  const priceNaira = parseInt(norm.replace(/[₦,\s]/g, ''), 10);
   if (isNaN(priceNaira) || priceNaira <= 0) {
     await send(phone, `❌ Invalid price. Enter a number in ₦ (e.g. 3000). Try again or type *CANCEL*.`);
     return;

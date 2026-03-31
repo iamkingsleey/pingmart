@@ -5,11 +5,11 @@
 import { KOBO_PER_NAIRA, NAIRA_DECIMAL_PLACES } from '../config/constants';
 import { CartItem, ProductType } from '../types';
 
-/** 150000 kobo → "₦1,500.00" */
+/** 150000 kobo → "₦1,500" (no trailing .00 for whole naira amounts) */
 export function formatNaira(kobo: number): string {
   const naira = kobo / KOBO_PER_NAIRA;
   return `₦${naira.toLocaleString('en-NG', {
-    minimumFractionDigits: NAIRA_DECIMAL_PLACES,
+    minimumFractionDigits: 0,
     maximumFractionDigits: NAIRA_DECIMAL_PLACES,
   })}`;
 }

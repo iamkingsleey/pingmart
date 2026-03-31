@@ -247,7 +247,7 @@ export async function processIncomingMessage(
 
     // ── "LANGUAGE" / "CHANGE LANGUAGE" at any time → re-open language menu ─
     if (isLanguageChangeKeyword(rawMessage)) {
-      await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { cart: [] });
+      await sessionRepository.upsert(from, vendor.id, ConversationState.LANGUAGE_SELECTION, { ...currentData, cart: currentData.cart });
       await sendLanguageSelectionList(from, vendor.businessName);
       logger.info('Language change requested', { from: maskPhone(from) });
       return;
