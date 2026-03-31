@@ -447,7 +447,7 @@ export function handleAwaitingItemNote(
     };
   }
 
-  // Note recorded (or skipped) — show cart status
+  // Note recorded (or skipped) — show cart status with quick-action buttons
   const cartMsg = clearedData.cart.length
     ? t('cart_status_items', lang, { count: String(clearedData.cart.length) })
     : t('cart_status_empty', lang);
@@ -456,6 +456,13 @@ export function handleAwaitingItemNote(
     messages: [cartMsg],
     nextState: ConversationState.ORDERING,
     nextData: clearedData,
+    buttons: clearedData.cart.length
+      ? [
+          { id: 'MENU', title: '➕ Add More'   },
+          { id: 'DONE', title: '🛒 Checkout'   },
+          { id: 'CLEAR', title: '🗑️ Clear Cart' },
+        ]
+      : undefined,
   };
 }
 

@@ -36,6 +36,8 @@ import {
   msgPickupLocationList,
   msgPickupLocationConfirmed,
   msgLanguageSwitchPrompt,
+  msgCartReviewButtons,
+  msgPostOrderButtons,
 } from '../whatsapp/templates';
 import { pickupLocationRepository } from '../../repositories/pickupLocation.repository';
 import { paymentTimeoutQueue } from '../../queues/paymentTimeout.queue';
@@ -943,6 +945,68 @@ export async function processIncomingMessage(
       return;
     }
 
+    // ── SEARCH_PRODUCT button — prompt the customer to type a product name ─────
+    if (messageToProcess.trim().toUpperCase() === 'SEARCH_PRODUCT') {
+      await enqueue(from, `🔍 What product are you looking for? Just type the name and I'll find it for you! 😊`);
+      await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
+      return;
+    }
+
+    // ── Cart review gate — intercept DONE before the state machine ───────────
+    // When the customer types DONE/CHECKOUT in ORDERING state with a non-empty
+    // cart and hasn't seen the review yet, show the cart review buttons instead
+    // of jumping straight to the address prompt.
+    const isCheckoutCommand = ['DONE', 'CHECKOUT'].includes(messageToProcess.trim().toUpperCase());
+    if (
+      currentState === ConversationState.ORDERING &&
+      isCheckoutCommand &&
+      currentData.cart.length > 0 &&
+      !currentData.awaitingCartReview
+    ) {
+      const cartSummary = formatCartSummary(currentData.cart);
+      const total = formatNaira(calculateCartTotal(currentData.cart));
+      const newData: SessionData = { ...currentData, awaitingCartReview: true };
+      await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, newData);
+      const { message: reviewMsg, buttons: reviewBtns } = msgCartReviewButtons(cartSummary, total, language);
+      await enqueueButtons(from, reviewMsg, reviewBtns);
+      await scheduleSessionTimeout(from, vendor.id, ConversationState.ORDERING, newData);
+      return;
+    }
+
+    // ── Cart review responses ─────────────────────────────────────────────────
+    if (currentData.awaitingCartReview) {
+      const upper = messageToProcess.trim().toUpperCase();
+      if (upper === 'CONFIRM_CART') {
+        // Proceed to address / checkout — clear review flag and run DONE through state machine
+        currentData = { ...currentData, awaitingCartReview: undefined };
+        await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, currentData);
+        messageToProcess = 'DONE';
+        // Fall through to state machine below
+      } else if (upper === 'EDIT_CART') {
+        const newData: SessionData = { ...currentData, awaitingCartReview: undefined };
+        await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, newData);
+        await enqueue(from, `No problem! Your cart has ${newData.cart.length} item(s). Keep adding items or type *DONE* when ready. 😊`);
+        await scheduleSessionTimeout(from, vendor.id, ConversationState.ORDERING, newData);
+        return;
+      } else if (upper === 'CANCEL') {
+        // Clear the review flag and let CANCEL flow through the state machine normally
+        currentData = { ...currentData, awaitingCartReview: undefined };
+        await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, currentData);
+        messageToProcess = 'CANCEL';
+        // Fall through to state machine below
+      }
+      // Any other reply while awaitingCartReview — re-show the buttons
+      else {
+        const { message: reviewMsg, buttons: reviewBtns } = msgCartReviewButtons(
+          formatCartSummary(currentData.cart),
+          formatNaira(calculateCartTotal(currentData.cart)),
+          language,
+        );
+        await enqueueButtons(from, reviewMsg, reviewBtns);
+        return;
+      }
+    }
+
     // ── UNKNOWN intent + vendor context → context-aware answer ────────────────
     // When the LLM couldn't classify the message AND the vendor has provided
     // businessContext, generate a smart answer instead of passing raw text to
@@ -1106,6 +1170,16 @@ async function processLanguageSelection(
 
   await sessionRepository.upsert(from, vendor.id, ConversationState.BROWSING, sessionData);
   await enqueue(from, welcomeMsg);
+
+  // 5. Follow-up interactive buttons — lets the customer tap instead of type
+  await enqueueButtons(
+    from,
+    `Tap below or type the item number you'd like to order:`,
+    [
+      { id: 'MENU',           title: '🛍️ View Catalogue'  },
+      { id: 'SEARCH_PRODUCT', title: '🔍 Search Product'   },
+    ],
+  );
 }
 
 /**
@@ -1259,6 +1333,9 @@ async function createOrderAndInitiatePayment(
     await enqueue(customerPhone, msgDigitalPaymentLink(paymentUrl, productName, totalAmount, order.id, language));
   } else {
     await enqueue(customerPhone, msgPhysicalPaymentLink(paymentUrl, totalAmount, order.id, language));
+    // Post-order quick actions for physical orders
+    const { message: postMsg, buttons: postBtns } = msgPostOrderButtons(language);
+    await enqueueButtons(customerPhone, postMsg, postBtns);
   }
 
   logger.info('Payment link sent', { orderId: order.id, reference: maskReference(reference) });
@@ -1337,6 +1414,10 @@ async function handleBankTransferCheckout(
       language,
     ),
   );
+
+  // Post-order quick actions
+  const { message: postMsg, buttons: postBtns } = msgPostOrderButtons(language);
+  await enqueueButtons(customerPhone, postMsg, postBtns);
 
   logger.info('Bank transfer instructions sent', { orderId: order.id, customer: maskPhone(customerPhone) });
 }

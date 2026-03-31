@@ -186,6 +186,15 @@ export interface SessionData {
   orderedWhileClosed?: boolean;
   /** Human-readable opening time stored at order time, e.g. "9:00 AM" */
   storeOpensAt?: string;
+
+  // ── Interactive UX flags ──────────────────────────────────────────────────
+  /**
+   * Set when customer types DONE in ORDERING state with items in their cart.
+   * The cart review buttons (Confirm / Edit / Cancel) are shown, and the next
+   * CONFIRM_CART button tap proceeds to address collection.
+   * Cleared on CONFIRM_CART, EDIT_CART, or CANCEL.
+   */
+  awaitingCartReview?: boolean;
 }
 
 // ─── API Contracts ────────────────────────────────────────────────────────────

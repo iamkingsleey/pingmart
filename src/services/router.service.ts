@@ -210,7 +210,11 @@ async function handleShopOrSellReply(phone: string, message: string): Promise<vo
   const choice = message.trim();
   await redis.del(`router:state:${phone}`);
 
-  if (choice === '1') {
+  // Accept both button IDs (primary) and legacy numeric replies (fallback)
+  const isSell = choice === 'SELL_ON_PINGMART' || choice === '2';
+  const isShop = choice === 'SHOP_FROM_STORE'  || choice === '1';
+
+  if (isShop) {
     await messageQueue.add({
       to: phone,
       message:
@@ -222,7 +226,7 @@ async function handleShopOrSellReply(phone: string, message: string): Promise<vo
     return;
   }
 
-  if (choice === '2') {
+  if (isSell) {
     await startVendorOnboarding(phone);
     return;
   }
@@ -394,36 +398,42 @@ async function startCustomerSession(phone: string, vendor: Vendor): Promise<void
 /**
  * Shows the language-selection prompt to a brand-new sender.
  * This is always the FIRST thing a new phone sees before "shop or sell?".
+ * Sent as a List Message so the customer can tap instead of typing a number.
  */
 async function showLanguageSelectionScreen(phone: string): Promise<void> {
   await redis.setex(`router:state:${phone}`, ROUTER_STATE_TTL_SECS, 'LANG_INIT');
   await messageQueue.add({
     to: phone,
-    message:
-      `👋 Welcome to *Pingmart*!\n\n` +
-      `Please choose your language / Biko họrọ asụsụ gị:\n\n` +
-      `1️⃣ English\n` +
-      `2️⃣ Pidgin\n` +
-      `3️⃣ Igbo\n` +
-      `4️⃣ Yoruba\n` +
-      `5️⃣ Hausa\n\n` +
-      `Reply with a number (1–5)`,
+    message: `👋 Welcome to *Pingmart*!\n\nPlease choose your language to continue:`,
+    listSections: [
+      {
+        title: '🌍 Select Your Language',
+        rows: [
+          { id: 'en',  title: '🇬🇧 English'  },
+          { id: 'pid', title: '🇳🇬 Pidgin'   },
+          { id: 'ig',  title: 'Igbo'          },
+          { id: 'yo',  title: 'Yorùbá'        },
+          { id: 'ha',  title: 'Hausa'         },
+        ],
+      },
+    ],
+    listButtonText: 'Choose Language',
   });
 }
 
 /**
  * Handles the reply to the language-selection prompt.
+ * Accepts both list row IDs (en, pid, ig, yo, ha) and legacy numeric keys (1-5).
  * Saves the chosen language to the Customer record, then shows "shop or sell?".
  */
 async function handleLangInitReply(phone: string, message: string): Promise<void> {
   const LANG_MAP: Record<string, Language> = {
-    '1': 'en',
-    '2': 'pid',
-    '3': 'ig',
-    '4': 'yo',
-    '5': 'ha',
+    // List row IDs (primary — sent by the interactive list)
+    'en': 'en', 'pid': 'pid', 'ig': 'ig', 'yo': 'yo', 'ha': 'ha',
+    // Legacy numeric fallback (plain text replies still work)
+    '1': 'en',  '2': 'pid',  '3': 'ig',  '4': 'yo',  '5': 'ha',
   };
-  const choice = message.trim();
+  const choice = message.trim().toLowerCase();
   const lang = LANG_MAP[choice];
 
   if (!lang) {
@@ -443,6 +453,7 @@ async function handleLangInitReply(phone: string, message: string): Promise<void
 
 /**
  * Shows the Pingmart "shop or sell?" landing screen to an unknown sender.
+ * Sent as Reply Buttons so the customer taps instead of typing.
  * Sets Redis state so their next message is handled as a reply to this prompt.
  */
 async function showShopOrSellScreen(phone: string): Promise<void> {
@@ -451,9 +462,10 @@ async function showShopOrSellScreen(phone: string): Promise<void> {
     to: phone,
     message:
       `👋 Welcome to *Pingmart*!\n\n` +
-      `What brings you here today?\n\n` +
-      `1️⃣ I want to shop from a store\n` +
-      `2️⃣ I want to sell on Pingmart\n\n` +
-      `Reply with *1* or *2*`,
+      `What would you like to do today?`,
+    buttons: [
+      { id: 'SELL_ON_PINGMART', title: '🏪 Sell on Pingmart' },
+      { id: 'SHOP_FROM_STORE',  title: '🛍️ Shop from a store' },
+    ],
   });
 }

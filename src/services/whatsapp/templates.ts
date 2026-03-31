@@ -524,6 +524,62 @@ export function msgLanguageSwitchPrompt(
   };
 }
 
+// ─── Cart & Post-Order Interactive Buttons ────────────────────────────────────
+
+/**
+ * Sent after a customer adds an item and resolves the item-note step.
+ * Gives quick access to keep shopping or proceed to checkout.
+ */
+export function msgCartActionButtons(
+  _lang: Language = 'en',
+): { buttons: InteractiveButton[] } {
+  return {
+    buttons: [
+      { id: 'MENU', title: '➕ Add More'   },
+      { id: 'DONE', title: '🛒 Checkout'   },
+      { id: 'CLEAR', title: '🗑️ Clear Cart' },
+    ],
+  };
+}
+
+/**
+ * Cart review shown when the customer types DONE/CHECKOUT.
+ * Three actions: confirm the order, go back to edit, or cancel entirely.
+ */
+export function msgCartReviewButtons(
+  cartSummary: string,
+  total: string,
+  _lang: Language = 'en',
+): { message: string; buttons: InteractiveButton[] } {
+  return {
+    message:
+      `🛒 *Your Cart*\n\n${cartSummary}\n\n` +
+      `💰 *Total: ${total}*\n\n` +
+      `Ready to place your order?`,
+    buttons: [
+      { id: 'CONFIRM_CART', title: '✅ Confirm Order' },
+      { id: 'EDIT_CART',    title: '✏️ Edit Cart'     },
+      { id: 'CANCEL',       title: '❌ Cancel'         },
+    ],
+  };
+}
+
+/**
+ * Shown after payment link / bank details are sent to the customer.
+ * Lets them quickly navigate to track their order or browse again.
+ */
+export function msgPostOrderButtons(
+  _lang: Language = 'en',
+): { message: string; buttons: InteractiveButton[] } {
+  return {
+    message: `What would you like to do next?`,
+    buttons: [
+      { id: 'MENU',         title: '🛍️ Continue Shopping' },
+      { id: 'ORDER STATUS', title: '📦 Track Order'       },
+    ],
+  };
+}
+
 export function msgDigitalDeliveryFailedVendorAlert(order: OrderWithDetails): string {
   const productName = order.orderItems[0]?.product.name ?? 'Unknown product';
   const maskedPhone = order.customer.whatsappNumber.replace(/(\+\d{3})\d+(\d{4})/, '$1***$2');

@@ -161,6 +161,26 @@ export async function startVendorOnboarding(phone: string): Promise<void> {
       `No technical knowledge needed — just answer my questions and you'll be live before you know it.\n\n` +
       `Ready? Tell me a bit about your business — what do you sell and what's your business called? 😊`,
   });
+
+  // Send business category selector immediately so vendor can tap their type
+  // without waiting for the LLM to ask. They can also just type their response.
+  await messageQueue.add({
+    to: phone,
+    message: `Or pick your business category to get started faster:`,
+    listSections: [
+      {
+        title: '🏷️ Business Categories',
+        rows: [
+          { id: 'CATEGORY:food',    title: '🍔 Food & Drinks',       description: 'Restaurants, cloud kitchens, snacks, beverages' },
+          { id: 'CATEGORY:fashion', title: '👗 Fashion & Clothing',  description: 'Clothing, shoes, bags, accessories' },
+          { id: 'CATEGORY:beauty',  title: '💄 Beauty & Cosmetics',  description: 'Skincare, haircare, makeup, wellness' },
+          { id: 'CATEGORY:digital', title: '💻 Digital Products',    description: 'Ebooks, courses, software, templates' },
+          { id: 'CATEGORY:general', title: '🛒 General / Other',     description: 'Everything else — groceries, electronics, services' },
+        ],
+      },
+    ],
+    listButtonText: 'Choose Category',
+  });
 }
 
 /**
@@ -185,6 +205,35 @@ export async function handleVendorOnboarding(
   }
 
   const data = (session.collectedData as unknown as CollectedData) ?? { history: [] };
+
+  // ── Category list tap — inject businessType without an LLM call ──────────────
+  // When the vendor taps a category from the list sent at the start of onboarding,
+  // the message arrives as "CATEGORY:food" etc. Handle it directly without the LLM.
+  if (message.startsWith('CATEGORY:')) {
+    const categoryKey = message.slice(9).toLowerCase().trim();
+    const VALID_CATEGORIES: Record<string, string> = {
+      food: 'food', fashion: 'fashion', beauty: 'beauty', digital: 'digital', general: 'general',
+    };
+    const resolved = VALID_CATEGORIES[categoryKey];
+    if (resolved) {
+      const CATEGORY_LABELS: Record<string, string> = {
+        food: '🍔 Food & Drinks', fashion: '👗 Fashion & Clothing',
+        beauty: '💄 Beauty & Cosmetics', digital: '💻 Digital Products', general: '🛒 General / Other',
+      };
+      const newData: CollectedData = { ...data, businessType: resolved };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data: { collectedData: newData as unknown as Prisma.InputJsonValue },
+      });
+      await messageQueue.add({
+        to: phone,
+        message:
+          `✅ *${CATEGORY_LABELS[resolved]}* — great choice!\n\n` +
+          `Now, what's your business called and what do you sell? Give me a short description. 😊`,
+      });
+      return;
+    }
+  }
 
   switch (session.step) {
     case 'COLLECTING_INFO':
