@@ -74,6 +74,21 @@ import { sessionTimeoutQueue } from '../../queues/sessionTimeout.queue';
 import { SessionTimeoutJobData } from '../../jobs/sessionTimeout.job';
 import { redis } from '../../utils/redis';
 import { notifyVendorNumbers } from '../vendor-notify.service';
+import { AsyncLocalStorage } from 'async_hooks';
+import { resolveStoreVocabulary, applyVocabulary } from '../../utils/store-vocabulary';
+import { StoreVocabulary } from '../../types';
+
+// ─── Store Vocabulary Context ─────────────────────────────────────────────────
+
+/**
+ * AsyncLocalStorage-based per-request vocabulary context.
+ * Set once per Bull job via vocabContext.enterWith() after the vendor is loaded.
+ * All enqueue helpers read from it — no call-site changes required anywhere.
+ *
+ * Safe with concurrent Bull workers: each Bull job callback runs inside its own
+ * async context tree, so enterWith() only affects the current job's execution.
+ */
+const vocabContext = new AsyncLocalStorage<StoreVocabulary>();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -166,6 +181,10 @@ export async function processIncomingMessage(
   try {
     const vendor = await vendorRepository.findByWhatsAppNumber(vendorWhatsAppNumber);
     if (!vendor?.isActive) { logger.warn('Message for unknown/inactive vendor', ctx); return; }
+
+    // Activate store-specific vocabulary for every outgoing message in this request.
+    // enterWith() is safe here because each Bull job runs in its own async context.
+    vocabContext.enterWith(resolveStoreVocabulary(vendor.businessType));
 
     const { customer } = await customerRepository.findOrCreate(from);
 
@@ -1530,11 +1549,16 @@ async function handleReorderReply(
 const QUEUE_OPTS = { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true } as const;
 
 async function enqueue(to: string, message: string): Promise<void> {
-  await messageQueue.add({ to, message }, QUEUE_OPTS);
+  const vocab = vocabContext.getStore();
+  const m = vocab ? applyVocabulary(message, vocab) : message;
+  await messageQueue.add({ to, message: m }, QUEUE_OPTS);
 }
 
 async function enqueueButtons(to: string, message: string, buttons: InteractiveButton[]): Promise<void> {
-  await messageQueue.add({ to, message, buttons }, QUEUE_OPTS);
+  const vocab = vocabContext.getStore();
+  const m = vocab ? applyVocabulary(message, vocab) : message;
+  const b = vocab ? buttons.map(btn => ({ ...btn, title: applyVocabulary(btn.title, vocab) })) : buttons;
+  await messageQueue.add({ to, message: m, buttons: b }, QUEUE_OPTS);
 }
 
 async function enqueueList(
@@ -1544,5 +1568,7 @@ async function enqueueList(
   listButtonText: string,
   listHeader?: string,
 ): Promise<void> {
-  await messageQueue.add({ to, message, listSections: sections, listButtonText, listHeader }, QUEUE_OPTS);
+  const vocab = vocabContext.getStore();
+  const m = vocab ? applyVocabulary(message, vocab) : message;
+  await messageQueue.add({ to, message: m, listSections: sections, listButtonText, listHeader }, QUEUE_OPTS);
 }

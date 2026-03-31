@@ -11,6 +11,7 @@ import { vendorRepository } from '../repositories/vendor.repository';
 import { offHoursContactRepository } from '../repositories/offHoursContact.repository';
 import { messageQueue } from '../queues/message.queue';
 import { logger } from '../utils/logger';
+import { resolveStoreVocabulary, applyVocabulary } from '../utils/store-vocabulary';
 
 export async function runOpeningNotificationJob(): Promise<void> {
   const now = new Date();
@@ -37,16 +38,14 @@ export async function runOpeningNotificationJob(): Promise<void> {
       });
 
       const opts = { attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true };
+      const vocab = resolveStoreVocabulary(vendor.businessType);
+      const openMsg = applyVocabulary(
+        `Good morning! 🌅 *${vendor.businessName}* is now open.\n\n` +
+        `Ready to take your order — type *MENU* to get started! 😊`,
+        vocab,
+      );
       const queueJobs = pending.map(({ customerPhone }) =>
-        messageQueue.add(
-          {
-            to: customerPhone,
-            message:
-              `Good morning! 🌅 *${vendor.businessName}* is now open.\n\n` +
-              `Ready to take your order — type *MENU* to get started! 😊`,
-          },
-          opts,
-        ),
+        messageQueue.add({ to: customerPhone, message: openMsg }, opts),
       );
       await Promise.allSettled(queueJobs);
       await offHoursContactRepository.markNotified(pending.map(c => c.id));

@@ -58,6 +58,28 @@ export enum ConversationState {
   COMPLETED = 'COMPLETED',
 }
 
+// ─── Store Vocabulary ─────────────────────────────────────────────────────────
+
+/**
+ * Category-aware vocabulary set resolved once per vendor session.
+ * Adapts all customer-visible navigation language to fit the store type
+ * (e.g. "Menu" for food, "Catalogue" for fashion, "Products" for electronics).
+ */
+export interface StoreVocabulary {
+  /** Uppercase command keyword, e.g. "MENU", "CATALOGUE", "PRODUCTS" */
+  browseCommand:   string;
+  /** Lowercase display noun, e.g. "menu", "catalogue", "products" */
+  browseNoun:      string;
+  /** Title-case display noun, e.g. "Menu", "Catalogue", "Products" */
+  browseNounTitle: string;
+  /** Action verb (lowercase), e.g. "browse", "shop" */
+  actionVerb:      string;
+  /** Singular item noun (lowercase), e.g. "dish", "item", "piece", "style" */
+  itemNoun:        string;
+  /** Plural item noun (lowercase), e.g. "dishes", "items", "pieces" */
+  itemNounPlural:  string;
+}
+
 // ─── Session Data ─────────────────────────────────────────────────────────────
 
 /** A single item in the customer's cart */
@@ -147,6 +169,14 @@ export interface SessionData {
   // ── Payment method flow ───────────────────────────────────────────────────
   /** 'paystack_transfer' | 'bank_transfer' — chosen or defaulted at checkout */
   chosenPaymentMethod?: string;
+
+  // ── Store vocabulary ─────────────────────────────────────────────────────
+  /**
+   * Resolved once when the customer enters the store; stored so every handler
+   * uses identical terminology throughout the conversation.
+   * Derived deterministically from vendor.businessType — absent in legacy sessions.
+   */
+  storeVocabulary?: StoreVocabulary;
 
   // ── Off-hours flag ────────────────────────────────────────────────────────
   /**

@@ -3,6 +3,7 @@
  */
 import { interpretMessage, CustomerIntent } from './llm.service';
 import { Product } from '@prisma/client';
+import { BROWSE_COMMAND_ALIASES } from '../utils/store-vocabulary';
 
 export interface NormalisedMessage {
   text: string;
@@ -25,6 +26,12 @@ export async function normaliseMessage(
 ): Promise<NormalisedMessage> {
   // Normalize internal whitespace so "order  status" matches "ORDER STATUS"
   const upper = rawMessage.trim().toUpperCase().replace(/\s+/g, ' ');
+
+  // Vocabulary-adapted browse commands (CATALOGUE, PRODUCTS, OFFERINGS, etc.)
+  // Route to MENU so the state machine always sees the canonical keyword.
+  if (BROWSE_COMMAND_ALIASES.has(upper)) {
+    return { text: 'MENU', intent: { intent: 'MENU' } };
+  }
 
   // Skip LLM for canonical commands
   if (KNOWN_KEYWORDS.has(upper)) {

@@ -11,10 +11,12 @@
  */
 import { Job } from 'bull';
 import { sessionRepository } from '../repositories/session.repository';
+import { vendorRepository } from '../repositories/vendor.repository';
 import { messageQueue } from '../queues/message.queue';
 import { sessionTimeoutQueue } from '../queues/sessionTimeout.queue';
 import { ConversationState, SessionData } from '../types';
 import { logger, maskPhone } from '../utils/logger';
+import { resolveStoreVocabulary, applyVocabulary } from '../utils/store-vocabulary';
 
 export interface SessionTimeoutJobData {
   from: string;
@@ -69,11 +71,15 @@ export async function processSessionTimeout(job: Job<SessionTimeoutJobData>): Pr
     // Reset session to IDLE — clears cart and all pending state
     await sessionRepository.upsert(from, vendorId, ConversationState.IDLE, { cart: [] });
 
+    const vendor = await vendorRepository.findById(vendorId);
+    const vocab = resolveStoreVocabulary(vendor?.businessType ?? 'general');
     await messageQueue.add({
       to: from,
-      message:
+      message: applyVocabulary(
         "⏰ Your session has timed out due to inactivity.\n\n" +
         "Your order has been cancelled. Type *MENU* to start a new order whenever you're ready! 😊",
+        vocab,
+      ),
     });
   }
 }

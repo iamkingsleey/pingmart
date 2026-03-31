@@ -34,6 +34,7 @@ import { logger, maskPhone } from '../utils/logger';
 import { ConversationState, SessionData } from '../types';
 import { formatNaira } from '../utils/formatters';
 import { Language } from '../i18n';
+import { resolveStoreVocabulary, applyVocabulary } from '../utils/store-vocabulary';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -364,11 +365,13 @@ async function startCustomerSession(phone: string, vendor: Vendor): Promise<void
         });
         await messageQueue.add({
           to: phone,
-          message:
+          message: applyVocabulary(
             `👋 Welcome back, ${name}! Great to see you again at *${vendor.businessName}* 🛍️\n\n` +
             `Your last order: ${itemSummary} (${total})\n\n` +
             `Want the same again? Reply *YES* to reorder instantly\n` +
             `or *MENU* to browse everything 😊`,
+            resolveStoreVocabulary(vendor.businessType),
+          ),
         });
         return;
       }

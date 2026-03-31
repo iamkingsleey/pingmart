@@ -62,7 +62,8 @@ function isCancelKeyword(text: string): boolean {
 }
 
 function isMenuKeyword(text: string): boolean {
-  return ['MENU', '0', 'HI', 'HELLO', 'START', 'HEY', 'CATALOG'].includes(norm(text));
+  // Includes all vocabulary-adapted browse commands so non-food stores still work
+  return ['MENU', '0', 'HI', 'HELLO', 'START', 'HEY', 'CATALOG', 'CATALOGUE', 'PRODUCTS', 'OFFERINGS'].includes(norm(text));
 }
 
 function parseIndex(text: string, max: number): number | null {
