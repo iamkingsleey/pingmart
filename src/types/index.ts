@@ -195,6 +195,21 @@ export interface SessionData {
    * Cleared on CONFIRM_CART, EDIT_CART, or CANCEL.
    */
   awaitingCartReview?: boolean;
+
+  // ── Support Mode (service-based vendors) ─────────────────────────────────
+  /**
+   * Current sub-state for support mode customer flow.
+   * Examples: 'ASKING_QUESTION', 'BOOKING_SELECT', 'BOOKING_DATE',
+   *           'BOOKING_ADDRESS', 'BOOKING_CONFIRM', 'VIEWING_SERVICES', ''
+   */
+  supportState?: string;
+  /** Booking in progress during the booking flow */
+  pendingBooking?: {
+    serviceItemId: string;
+    serviceRequested: string;
+    scheduledDate?: string;
+    deliveryAddress?: string;
+  };
 }
 
 // ─── API Contracts ────────────────────────────────────────────────────────────

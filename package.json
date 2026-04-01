@@ -5,7 +5,7 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "tsc --project tsconfig.json",
+    "build": "prisma generate && tsc --project tsconfig.json",
     "start": "node dist/server.js",
     "test": "jest --runInBand --forceExit",
     "test:watch": "jest --watch --runInBand",

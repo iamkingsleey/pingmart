@@ -48,6 +48,7 @@ model Vendor {
   description  String?            // shown on customer welcome screen
   welcomeMessage String?          // custom greeting override
   isPaused     Boolean  @default(false)     // vendor can pause/resume store
+  mode         VendorMode @default(STORE)  // STORE = product catalogue, SUPPORT = service/booking
 
   // ── v2: Delivery options ─────────────────────────────────────────────
   // 'delivery' | 'pickup' | 'both' — controls checkout flow
@@ -82,6 +83,9 @@ model Vendor {
   notificationNumbers  VendorNotificationNumber[]
   setupSession         VendorSetupSession?
   pickupLocations      PickupLocation[]
+  supportKnowledge     SupportKnowledge[]
+  serviceItems         ServiceItem[]
+  bookings             Booking[]
 
   @@map("vendors")
 }
@@ -289,6 +293,11 @@ enum OrderType {
   DIGITAL
 }
 
+enum VendorMode {
+  STORE    // product catalogue + order flow (default)
+  SUPPORT  // service business — FAQ + booking flow
+}
+
 enum OrderStatus {
   PENDING_PAYMENT   // v1: Order created, awaiting payment
   PAYMENT_PENDING   // v2: Virtual account / bank transfer created, waiting for payment
@@ -394,4 +403,68 @@ model VendorNotificationNumber {
 
   @@unique([vendorId, phone])
   @@map("vendor_notification_numbers")
+}
+
+// ─── Support Mode ─────────────────────────────────────────────────────────────
+// Service-based businesses use Support Mode instead of the product catalogue flow.
+// Customers can view services, ask questions (FAQ + LLM), and request bookings.
+
+model SupportKnowledge {
+  id        String   @id @default(uuid())
+  vendorId  String
+  question  String
+  answer    String
+  createdAt DateTime @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@map("support_knowledge")
+}
+
+model ServiceItem {
+  id              String   @id @default(uuid())
+  vendorId        String
+  name            String
+  price           Int      // in kobo
+  unit            String   // "per session", "per kg", "per hour", etc.
+  turnaroundHours Int?     // estimated completion time in hours
+  description     String?
+  isAvailable     Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@map("service_items")
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  IN_PROGRESS
+  READY
+  COMPLETED
+  CANCELLED
+}
+
+model Booking {
+  id               String        @id @default(uuid())
+  vendorId         String
+  customerPhone    String
+  customerName     String?
+  serviceRequested String
+  scheduledDate    String?       // free-text date/time from customer (e.g. "Friday 10am")
+  deliveryAddress  String?       // for pickup/mobile service vendors
+  status           BookingStatus @default(PENDING)
+  notes            String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@index([vendorId, status])
+  @@map("bookings")
 }

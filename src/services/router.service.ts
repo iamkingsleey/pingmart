@@ -29,6 +29,8 @@ import { processIncomingMessage } from './order/order.service';
 import { handleVendorStatusCommand } from './delivery/physicalDelivery.service';
 import { startVendorOnboarding, handleVendorOnboarding, handleVendorProductPhoto } from './vendor-onboarding.service';
 import { handleVendorDashboard } from './vendor-management.service';
+import { handleSupportCustomerMessage, showSupportWelcome } from './support-customer.service';
+import { handleSupportVendorDashboard } from './support-vendor.service';
 import { customerRepository } from '../repositories/customer.repository';
 import { logger, maskPhone } from '../utils/logger';
 import { ConversationState, SessionData } from '../types';
@@ -178,7 +180,11 @@ export async function routeIncomingMessage(
           state: activeCustomerSession.state,
           sessionStore: sessionVendor.storeCode ?? sessionVendor.id,
         });
-        await processIncomingMessage(senderPhone, message, sessionVendor.whatsappNumber, undefined);
+        if ((sessionVendor as any).mode === 'SUPPORT') {
+          await handleSupportCustomerMessage(senderPhone, message, sessionVendor);
+        } else {
+          await processIncomingMessage(senderPhone, message, sessionVendor.whatsappNumber, undefined);
+        }
         return;
       }
     }
@@ -209,7 +215,11 @@ export async function routeIncomingMessage(
     if (vendor) {
       logger.info('Router → existing customer session', { from: maskPhone(senderPhone) });
       // Pass undefined for messageId — dedup was already handled above
-      await processIncomingMessage(senderPhone, message, vendor.whatsappNumber, undefined);
+      if ((vendor as any).mode === 'SUPPORT') {
+        await handleSupportCustomerMessage(senderPhone, message, vendor);
+      } else {
+        await processIncomingMessage(senderPhone, message, vendor.whatsappNumber, undefined);
+      }
       return;
     }
   }
@@ -288,8 +298,12 @@ async function handleVendorMessage(
     return;
   }
 
-  // Phase 5: full vendor dashboard
-  await handleVendorDashboard(phone, message, vendor);
+  // Phase 5: full vendor dashboard (mode-aware)
+  if ((vendor as any).mode === 'SUPPORT') {
+    await handleSupportVendorDashboard(phone, message, vendor);
+  } else {
+    await handleVendorDashboard(phone, message, vendor);
+  }
 }
 
 /**
@@ -363,7 +377,11 @@ async function startCustomerSession(phone: string, vendor: Vendor): Promise<void
         from: maskPhone(phone),
         storeCode: vendor.storeCode,
       });
-      await processIncomingMessage(phone, 'MENU', vendor.whatsappNumber, undefined);
+      if ((vendor as any).mode === 'SUPPORT') {
+        await showSupportWelcome(phone, vendor);
+      } else {
+        await processIncomingMessage(phone, 'MENU', vendor.whatsappNumber, undefined);
+      }
       return;
     }
 
@@ -426,7 +444,11 @@ async function startCustomerSession(phone: string, vendor: Vendor): Promise<void
 
   // ── 5. New customer or first visit to this store ───────────────────────────
   await sessionRepository.reset(phone, vendor.id);
-  await processIncomingMessage(phone, 'MENU', vendor.whatsappNumber, undefined);
+  if ((vendor as any).mode === 'SUPPORT') {
+    await showSupportWelcome(phone, vendor);
+  } else {
+    await processIncomingMessage(phone, 'MENU', vendor.whatsappNumber, undefined);
+  }
 }
 
 /**
