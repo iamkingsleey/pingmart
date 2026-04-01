@@ -67,6 +67,7 @@ app.post('/submit', async (req, res) => {
         email:     String(email).trim().toLowerCase(),
         timestamp: timestamp ?? new Date().toISOString(),
       }),
+      redirect: 'follow', // Google Apps Script returns 302 on POST; follow it
       signal: AbortSignal.timeout(10_000),
     });
     if (!upstream.ok) throw new Error(`Upstream ${upstream.status}`);
