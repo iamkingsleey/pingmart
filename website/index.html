@@ -27,6 +27,7 @@
       --error:         #f85149;
       --error-dim:     rgba(248, 81, 73, 0.07);
       --error-border:  rgba(248, 81, 73, 0.25);
+      --green:         #3fb950;
     }
 
     html { height: 100%; }
@@ -136,7 +137,6 @@
       color: #ffffff;
       outline: none;
       transition: border-color 0.15s ease, box-shadow 0.15s ease;
-      /* Prevent browsers overriding background on filled state */
       -webkit-text-fill-color: #ffffff;
     }
 
@@ -317,44 +317,72 @@
       text-underline-offset: 2px;
     }
 
+    /* ── Fade transitions ── */
+    #form-wrap {
+      transition: opacity 0.3s ease;
+    }
+
+    #success-state {
+      transition: opacity 0.4s ease;
+    }
+
     /* ── Success state ── */
-    .success {
+    #success-state {
       display: none;
+      opacity: 0;
       text-align: center;
-      padding: 12px 0 4px;
-      animation: fadeUp 0.35s ease both;
+      padding: 16px 0 8px;
     }
 
-    @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(8px); }
-      to   { opacity: 1; transform: translateY(0); }
+    .success-emoji {
+      font-size: 52px;
+      line-height: 1;
+      margin-bottom: 22px;
+      display: block;
     }
-
-    .success-ring {
-      width: 56px;
-      height: 56px;
-      margin: 0 auto 20px;
-      background: var(--border-subtle);
-      border: 1px solid var(--border);
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .success-ring svg { color: var(--text-primary); }
 
     .success h2 {
-      font-size: 1.125rem;
-      font-weight: 700;
+      font-size: 1.625rem;
+      font-weight: 800;
       color: var(--text-primary);
-      margin-bottom: 8px;
+      letter-spacing: -0.4px;
+      margin-bottom: 18px;
     }
 
-    .success p {
-      font-size: 0.9rem;
+    .success-body {
+      font-size: 0.9375rem;
       color: var(--text-secondary);
-      line-height: 1.6;
+      line-height: 1.7;
+      margin-bottom: 18px;
+    }
+
+    .success-sig {
+      font-size: 0.875rem;
+      font-style: italic;
+      color: var(--text-muted);
+      margin-bottom: 0;
+    }
+
+    .success-divider {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: 24px 0;
+    }
+
+    .success-contact {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+
+    .success-contact a {
+      color: var(--green);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .success-contact a:hover {
+      text-decoration: underline;
+      text-underline-offset: 2px;
     }
   </style>
 </head>
@@ -435,23 +463,44 @@
       </p>
     </div>
 
-    <div class="success" id="success-state">
-      <div class="success-ring">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
-             stroke="currentColor" stroke-width="2.5"
-             stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="20 6 9 17 4 12"></polyline>
-        </svg>
+    <!-- ── Success screen (hidden until form submits) ── -->
+    <div id="success-state">
+      <span class="success-emoji">🎉</span>
+      <div class="success">
+        <h2>You're in!</h2>
+        <p class="success-body">
+          Thank you for being one of our first 100 — that means everything to us.<br>
+          Pingmart is being built for people like you, and we'll be in touch very soon.
+        </p>
+        <p class="success-sig">— The Pingmart Team</p>
       </div>
-      <h2>You're on the list!</h2>
-      <p>We'll be in touch soon.</p>
+      <div class="success-divider"></div>
+      <p class="success-contact">
+        Questions? <a href="mailto:hello@pingmart.io">hello@pingmart.io</a>
+      </p>
     </div>
 
   </div>
 
   <script>
     (function () {
+      // ── Webhook URL (Google Apps Script web app /exec endpoint) ──────────────
+      // Must be deployed with "Execute as: Me" and "Who has access: Anyone".
+      // With mode:'no-cors' the response is always opaque — status unreadable.
+      // NOTE: 'Content-Type: text/plain' is required here. The browser enforces
+      // that only safelisted Content-Type values (text/plain, multipart/form-data,
+      // application/x-www-form-urlencoded) may be used in no-cors mode. Setting
+      // application/json would throw a TypeError before the request is sent.
+      // GAS reads the body via e.postData.contents regardless of Content-Type.
       var WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwNS0zqEmwNeyyV3p6Ik6_ChRI-712MgXtTfir4FK8Z5WNMi8UvVydtUNz6twBob2YqhQ/exec';
+
+      // ── Diagnostic: confirm URL is set on page load ──────────────────────────
+      if (WEBHOOK_URL && WEBHOOK_URL.indexOf('script.google.com') !== -1) {
+        console.log('[Pingmart] Webhook URL configured: ' +
+          WEBHOOK_URL.slice(0, 48) + '...' + WEBHOOK_URL.slice(-8));
+      } else {
+        console.warn('[Pingmart] WARNING: WEBHOOK_URL is not set or invalid!');
+      }
 
       var form      = document.getElementById('signup-form');
       var btn       = document.getElementById('submit-btn');
@@ -499,7 +548,6 @@
       function validate(name, phone, email) {
         var ok = true;
 
-        // Full Name: min 2 chars, no digits
         var trimName = name.trim();
         if (trimName.length < 2) {
           fieldErr('name', 'Please enter your full name (at least 2 characters).');
@@ -511,7 +559,6 @@
           clearFieldErr('name');
         }
 
-        // Phone: digits only, min 7 after dial code
         var digits = phone.replace(/\D/g, '');
         if (digits.length < 7) {
           fieldErr('phone', 'Please enter at least 7 digits.');
@@ -520,7 +567,6 @@
           clearFieldErr('phone');
         }
 
-        // Email: must contain @ and a valid-looking domain
         var trimEmail = email.trim();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimEmail)) {
           fieldErr('email', 'Please enter a valid email address.');
@@ -538,6 +584,21 @@
         btn.innerHTML = on
           ? '<span class="spinner"></span> Submitting\u2026'
           : 'Join Early Testers';
+      }
+
+      /* ── Fade transition: form out (300ms) → success in (400ms) ── */
+      function showSuccess() {
+        formWrap.style.opacity = '0';
+        setTimeout(function () {
+          formWrap.style.display = 'none';
+          successEl.style.display = 'block';
+          // Double rAF ensures display change is painted before opacity transition
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+              successEl.style.opacity = '1';
+            });
+          });
+        }, 310);
       }
 
       /* ── Submit ── */
@@ -562,11 +623,15 @@
           timestamp: new Date().toISOString(),
         });
 
-        console.log('[Pingmart] Submitting to webhook…');
+        console.log('[Pingmart] Submitting…', {
+          name: name.trim(),
+          phone: fullPhone,
+          email: email.trim().toLowerCase(),
+        });
 
         // POST directly to Google Apps Script.
-        // mode:'no-cors' avoids preflight — response will be opaque (unreadable)
-        // but the sheet write still happens server-side.
+        // mode:'no-cors' prevents CORS preflight; response will be opaque.
+        // A completed fetch (no exception) = success — GAS wrote to the sheet.
         fetch(WEBHOOK_URL, {
           method:  'POST',
           mode:    'no-cors',
@@ -574,14 +639,13 @@
           body:    payload,
         })
           .then(function (res) {
-            console.log('[Pingmart] Fetch completed, type:', res.type);
-            // With no-cors the response is always opaque (type === 'opaque').
-            // A network error would have thrown above, so we treat completion as success.
-            formWrap.style.display  = 'none';
-            successEl.style.display = 'block';
+            console.log('[Pingmart] Fetch completed. Response type:', res.type);
+            // Opaque response (type === 'opaque') is expected with no-cors.
+            // Any completion without a network exception is treated as success.
+            showSuccess();
           })
           .catch(function (err) {
-            console.error('[Pingmart] Fetch failed:', err);
+            console.error('[Pingmart] Fetch FAILED:', err.name, '-', err.message);
             errBanner.innerHTML =
               'Something went wrong. Please email us directly at ' +
               '<a href="mailto:hello@pingmart.io">hello@pingmart.io</a>';
