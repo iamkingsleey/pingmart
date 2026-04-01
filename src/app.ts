@@ -63,7 +63,10 @@ app.post('/submit', async (req, res) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name:      String(name).trim(),
-        phone:     String(phone).trim(),
+        // Apostrophe prefix forces Google Sheets to treat the value as plain
+        // text rather than a formula — prevents #ERROR! when the number
+        // starts with '+' (international dial code).
+        phone:     "'" + String(phone).trim(),
         email:     String(email).trim().toLowerCase(),
         timestamp: timestamp ?? new Date().toISOString(),
       }),

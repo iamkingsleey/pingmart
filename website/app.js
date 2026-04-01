@@ -88,6 +88,9 @@
     formWrap.style.opacity = '0';
     setTimeout(function () {
       formWrap.style.display = 'none';
+      // Centre badge / brand / tagline on the success screen
+      var card = document.querySelector('.card');
+      if (card) card.classList.add('card--success');
       successEl.style.display = 'block';
       // Double rAF ensures display change is painted before opacity transition starts
       requestAnimationFrame(function () {
