@@ -30,8 +30,9 @@ import { env } from '../config/env';
 import { PLAN_NOTIFICATION_LIMITS, PLAN_UPGRADE_PRICING } from '../config/constants';
 import { detectLanguageSwitchRequest } from './llm.service';
 import { sendTextMessage } from './whatsapp/whatsapp.service';
-import { redis } from '../utils/redis';
 import { Language } from '../i18n';
+import { getVendorLang, setVendorLang } from '../utils/vendor-lang';
+import { customerRepository } from '../repositories/customer.repository';
 import {
   startSupportServicesStep,
   handleSupportAddingServices,
@@ -121,11 +122,9 @@ const REQUIRED_INFO_FIELDS: (keyof CollectedData)[] = [
 
 // ─── Onboarding Language Helpers ─────────────────────────────────────────────
 
-const ONBOARDING_LANG_TTL = 30 * 24 * 60 * 60; // 30 days
-const onboardingLangKey = (phone: string) => `vendor:lang:${phone}`;
-
+/** @deprecated use setVendorLang() from vendor-lang utility — kept for call-site compat */
 async function setOnboardingLanguage(phone: string, lang: Language): Promise<void> {
-  await redis.setex(onboardingLangKey(phone), ONBOARDING_LANG_TTL, lang);
+  await setVendorLang(phone, lang);
 }
 
 /** Confirmation messages for a language switch during vendor onboarding. */
@@ -135,6 +134,95 @@ const ONBOARDING_LANG_CONFIRM: Record<Language, string> = {
   ig:  `Ọ dị mma! A ga m asị gị n'Igbo. Ka anyị gaa n'ihu na-etolite ụlọ ahịa gị. 😊`,
   yo:  `Ko problem! Emi yoo ba ẹ sọrọ ní Yorùbá. Jẹ ká tẹsiwaju pẹlu iṣeto itaja rẹ. 😊`,
   ha:  `To! Zan yi magana da kai da Hausa. Mu ci gaba da saita kantin ku. 😊`,
+};
+
+// ─── Onboarding Welcome Translations ─────────────────────────────────────────
+
+const WELCOME_SUPPORT: Record<Language, string> = {
+  en:
+    `🎉 Welcome to *Pingmart for Service Businesses*!\n\n` +
+    `I'll help you set up a WhatsApp support channel so customers can book appointments, ask questions, and reach your team — all without leaving WhatsApp.\n\n` +
+    `No technical knowledge needed. Let's start — what's your business called? 😊`,
+  pid:
+    `🎉 Welcome to *Pingmart for Service Businesses*!\n\n` +
+    `I go help you set up WhatsApp channel so your customers fit book appointment, ask question, and reach your team — all for WhatsApp. No need for any tech knowledge.\n\n` +
+    `Make we start — wetin be your business name? 😊`,
+  ig:
+    `🎉 Nnọọ na *Pingmart maka Ụlọ Ọrụ Ọrụ*!\n\n` +
+    `M ga-enyere gị aka ichebe channel WhatsApp ka ndị ahịa gị nwee ike ịmee nkwa, ajụọ ajụjụ, ma kpọọ ndị otu gị — niile na WhatsApp. Ọ dịghị mkpa ihe ọ bụla gbasara teknụzụ.\n\n` +
+    `Ka anyị bido — kedu aha ụlọ ọrụ gị? 😊`,
+  yo:
+    `🎉 Kaabọ sí *Pingmart fún Àwọn Iṣòwò Ìpèsè*!\n\n` +
+    `Mo máa ràn yín lọ́wọ́ láti ṣètò ikanni WhatsApp kí àwọn onígbọ̀wọ́ lè ṣe àkọsílẹ̀ àpẹjọ, béèrè àwọn ìbéèrè, kí wọ́n sì lè wọlé sí ẹgbẹ́ rẹ — gbogbo rẹ̀ láti WhatsApp. Kò sí àìmọ̀ ìmọ̀ ẹ̀rọ tó nílò.\n\n` +
+    `Jẹ ká bẹ̀rẹ̀ — kí ni orúkọ iṣòwò rẹ? 😊`,
+  ha:
+    `🎉 Barka da zuwa *Pingmart don Kasuwancin Sabis*!\n\n` +
+    `Zan taimake ku saita tashar WhatsApp domin abokan ciniki su iya yin randevú, tambaya, kuma su isa ƙungiyar ku — duka a WhatsApp. Ba a buƙatar ilimin fasaha.\n\n` +
+    `Bari mu fara — menene sunan kasuwancin ku? 😊`,
+};
+
+const WELCOME_PRODUCT: Record<Language, string> = {
+  en:
+    `🎉 Welcome to *Pingmart for Vendors*!\n\n` +
+    `I'm going to help you set up your WhatsApp store in just a few minutes.\n` +
+    `No technical knowledge needed — just answer my questions and you'll be live before you know it.\n\n` +
+    `Ready? Tell me a bit about your business — what do you sell and what's your business called? 😊`,
+  pid:
+    `🎉 Welcome to *Pingmart for Vendors*!\n\n` +
+    `I go help you set up your WhatsApp store sharp sharp — no need for any tech knowledge. Just answer my question well well and you go dey live before you know am.\n\n` +
+    `Ready? Tell me about your business — wetin you dey sell and wetin be your business name? 😊`,
+  ig:
+    `🎉 Nnọọ na *Pingmart maka Ndị Na-ere Ihe*!\n\n` +
+    `M ga-enyere gị aka itozu ụlọ ahịa WhatsApp gị na nkeji ole na ole. Ọ dịghị mkpa ihe ọ bụla gbasara teknụzụ — zaa ajụjụ m naanị ma ị ga-anọ live tupu ịmara ya.\n\n` +
+    `I dị njikere? Gwa m maka ụlọ ọrụ gị — gịnị ka i na-ere ahịa ma kedu aha ụlọ ọrụ gị? 😊`,
+  yo:
+    `🎉 Kaabọ sí *Pingmart fún Àwọn Tó Ta Nǹkan*!\n\n` +
+    `Mo máa ràn yín lọ́wọ́ láti ṣètò ilé ìtajà WhatsApp rẹ ní ìṣẹjú díẹ̀. Kò sí àìmọ̀ ìmọ̀ ẹ̀rọ tó nílò — dáhùn àwọn ìbéèrè mi nìkan ìwọ sì máa wà lọ́nàkọnà kì ó tó mọ̀.\n\n` +
+    `À dúró? Sọ fún mi nípa iṣòwò rẹ — kí ni o ń tà àti kí ni orúkọ iṣòwò rẹ? 😊`,
+  ha:
+    `🎉 Barka da zuwa *Pingmart don Masu Sayarwa*!\n\n` +
+    `Zan taimake ku saita kantin WhatsApp ku a cikin mintuna kaɗan. Ba a buƙatar ilimin fasaha — amsa tambayoyina kawai kuma za ku fara aiki kafin ku sani.\n\n` +
+    `Kuna shirye? Gaya mani game da kasuwancin ku — menene kuke sayarwa da menene sunan kasuwancin ku? 😊`,
+};
+
+const WELCOME_LIST_PROMPT_SUPPORT: Record<Language, string> = {
+  en:  `Or pick your service type to get started faster:`,
+  pid: `Or sef, pick your service type to start fast:`,
+  ig:  `Ma ọ bụ họrọ ụdị ọrụ gị ka i bido ngwa ngwa:`,
+  yo:  `Tàbí yàn irú ìpèsè rẹ láti bẹ̀rẹ̀ yára:`,
+  ha:  `Ko zaɓi nau'in sabis ɗin ku don fara da sauri:`,
+};
+
+const WELCOME_LIST_BUTTON_SUPPORT: Record<Language, string> = {
+  en:  `Choose Service Type`,
+  pid: `Pick Your Service`,
+  ig:  `Họrọ Ụdị Ọrụ`,
+  yo:  `Yan Irú Ìpèsè`,
+  ha:  `Zaɓi Nau'in Sabis`,
+};
+
+const WELCOME_LIST_PROMPT_PRODUCT: Record<Language, string> = {
+  en:  `Or pick your business category to get started faster:`,
+  pid: `Or sef, pick your business category to start fast:`,
+  ig:  `Ma ọ bụ họrọ ụdị azụmaahịa gị ka i bido ngwa ngwa:`,
+  yo:  `Tàbí yàn ẹ̀ka iṣòwò rẹ láti bẹ̀rẹ̀ yára:`,
+  ha:  `Ko zaɓi rukunin kasuwancin ku don fara da sauri:`,
+};
+
+const WELCOME_LIST_BUTTON_PRODUCT: Record<Language, string> = {
+  en:  `Choose Category`,
+  pid: `Pick Your Category`,
+  ig:  `Họrọ Ẹka`,
+  yo:  `Yan Ẹ̀ka`,
+  ha:  `Zaɓi Rukunin`,
+};
+
+const CATEGORY_GREAT_CHOICE: Record<Language, (label: string) => string> = {
+  en:  (label) => `✅ *${label}* — great choice!\n\nNow, what's your business called and what do you offer? Give me a short description. 😊`,
+  pid: (label) => `✅ *${label}* — correct choice!\n\nNow, wetin be your business name and wetin you offer? Give me small description. 😊`,
+  ig:  (label) => `✅ *${label}* — họrọ dị mma!\n\nKwuo m aha ụlọ ọrụ gị na ihe i na-enye. Nye m nkọwa dị mkpụmkpụ. 😊`,
+  yo:  (label) => `✅ *${label}* — yàn tó dára!\n\nNísisìyí, kí ni orúkọ iṣòwò rẹ àti ohun tí o nfúnni? Fun mi ní àpèjúwe kékeré. 😊`,
+  ha:  (label) => `✅ *${label}* — zaɓin kyau!\n\nYanzun, menene sunan kasuwancin ku da abin da kuke bayarwa? Ba ni ɗan bayani. 😊`,
 };
 
 // ─── Low-latency helpers ─────────────────────────────────────────────────────
@@ -224,18 +312,21 @@ export async function startVendorOnboarding(phone: string, supportMode = false):
     return;
   }
 
+  // Sync language from the customer record (set during language selection before onboarding)
+  // so that all subsequent onboarding messages render in the vendor's chosen language.
+  const customer = await customerRepository.findByWhatsAppNumber(phone);
+  const lang = ((customer?.language) ?? 'en') as Language;
+  if (lang !== 'en') await setVendorLang(phone, lang);
+
   if (supportMode) {
     await messageQueue.add({
       to: phone,
-      message:
-        `🎉 Welcome to *Pingmart for Service Businesses*!\n\n` +
-        `I'll help you set up a WhatsApp support channel so customers can book appointments, ask questions, and reach your team — all without leaving WhatsApp.\n\n` +
-        `No technical knowledge needed. Let's start — what's your business called? 😊`,
+      message: WELCOME_SUPPORT[lang],
     });
     // Support mode: only show service categories
     await messageQueue.add({
       to: phone,
-      message: `Or pick your service type to get started faster:`,
+      message: WELCOME_LIST_PROMPT_SUPPORT[lang],
       listSections: [
         {
           title: '🛠️ Service Businesses',
@@ -251,21 +342,17 @@ export async function startVendorOnboarding(phone: string, supportMode = false):
           ],
         },
       ],
-      listButtonText: 'Choose Service Type',
+      listButtonText: WELCOME_LIST_BUTTON_SUPPORT[lang],
     });
   } else {
     await messageQueue.add({
       to: phone,
-      message:
-        `🎉 Welcome to *Pingmart for Vendors*!\n\n` +
-        `I'm going to help you set up your WhatsApp store in just a few minutes.\n` +
-        `No technical knowledge needed — just answer my questions and you'll be live before you know it.\n\n` +
-        `Ready? Tell me a bit about your business — what do you sell and what's your business called? 😊`,
+      message: WELCOME_PRODUCT[lang],
     });
     // Product mode: show both product and service categories
     await messageQueue.add({
       to: phone,
-      message: `Or pick your business category to get started faster:`,
+      message: WELCOME_LIST_PROMPT_PRODUCT[lang],
       listSections: [
         {
           title: '🏷️ Product Businesses',
@@ -291,7 +378,7 @@ export async function startVendorOnboarding(phone: string, supportMode = false):
           ],
         },
       ],
-      listButtonText: 'Choose Category',
+      listButtonText: WELCOME_LIST_BUTTON_PRODUCT[lang],
     });
   }
 }
@@ -353,11 +440,10 @@ export async function handleVendorOnboarding(
         // Set vendor mode immediately so routing is correct even if session is lost
         await prisma.vendor.update({ where: { id: vendor.id }, data: { mode: 'SUPPORT' } });
       }
+      const catLang = await getVendorLang(phone);
       await messageQueue.add({
         to: phone,
-        message:
-          `✅ *${CATEGORY_LABELS[resolved]}* — great choice!\n\n` +
-          `Now, what's your business called and what do you offer? Give me a short description. 😊`,
+        message: CATEGORY_GREAT_CHOICE[catLang](CATEGORY_LABELS[resolved] ?? resolved),
       });
       return;
     }
@@ -480,7 +566,8 @@ async function handleCollectingInfo(
     ? `\n\nIMPORTANT: The store code "${data.storeCodeConflict}" is already taken by another vendor. Suggest alternatives naturally.`
     : '';
 
-  const systemPrompt = buildCollectingInfoPrompt(alreadyCollected, stillNeeded, conflictNote);
+  const collectingLang = await getVendorLang(phone);
+  const systemPrompt = buildCollectingInfoPrompt(alreadyCollected, stillNeeded, conflictNote, collectingLang);
 
   // Keep history to last 20 exchanges (40 messages) to stay within token limits
   const trimmedHistory = history.slice(-40);
@@ -718,7 +805,7 @@ async function handleAddingProducts(
     if (upper === 'EDIT_IMPORT_ITEM') {
       // Vendor wants to correct their sheet/file before importing.
       // Tell them to make changes externally and signal with EDITED when done.
-      const lang = ((await redis.get(onboardingLangKey(phone))) as Language | null) ?? 'en';
+      const lang = await getVendorLang(phone);
       const EDIT_MESSAGES: Record<Language, string> = {
         en:  `Go ahead and make your edits. When you're done, send *EDITED* and I'll re-read your sheet 👍`,
         pid: `Go edit am. When you don finish, send *EDITED* make I read am again 👍`,
@@ -2103,10 +2190,19 @@ async function activateStore(
 
 // ─── LLM Prompts ─────────────────────────────────────────────────────────────
 
+const LANG_INSTRUCTION: Record<Language, string> = {
+  en:  '',
+  pid: '\n\nIMPORTANT: Respond ONLY in Nigerian Pidgin English throughout this entire conversation. Use Pidgin naturally — e.g. "wetin", "I go", "you fit", "no wahala", "oya". Never switch to Standard English.',
+  ig:  '\n\nIMPORTANT: Respond ONLY in Igbo throughout this entire conversation. Use natural, conversational Igbo.',
+  yo:  '\n\nIMPORTANT: Respond ONLY in Yorùbá throughout this entire conversation. Use natural, conversational Yorùbá.',
+  ha:  '\n\nIMPORTANT: Respond ONLY in Hausa throughout this entire conversation. Use natural, conversational Hausa.',
+};
+
 function buildCollectingInfoPrompt(
   alreadyCollected: string,
   stillNeeded: string,
   conflictNote: string,
+  lang: Language = 'en',
 ): string {
   return `You are a friendly and warm Pingmart onboarding assistant helping a Nigerian vendor set up their WhatsApp store.
 
@@ -2115,7 +2211,7 @@ Your personality:
 - Use occasional Nigerian expressions naturally (e.g. "oya", "well done", "e go be") but don't overdo it
 - Celebrate milestones ("Amazing! Your store is almost ready 🎉")
 - Be patient with corrections and changes
-- Keep responses SHORT — vendors are on mobile. Max 5 lines per response.
+- Keep responses SHORT — vendors are on mobile. Max 5 lines per response.${LANG_INSTRUCTION[lang]}
 
 Your job:
 Collect the following information through natural conversation. Extract what you can from each response and only ask for what's still missing.

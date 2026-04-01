@@ -18,6 +18,8 @@ import { InteractiveButton } from '../types';
 import { encryptBankAccount } from '../utils/crypto';
 import { logger, maskPhone } from '../utils/logger';
 import { env } from '../config/env';
+import { Language } from '../i18n';
+import { getVendorLang } from '../utils/vendor-lang';
 
 type PrismaJson = Prisma.InputJsonValue;
 
@@ -97,6 +99,283 @@ function capitalise(str?: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
+// ─── Support Mode Translations ────────────────────────────────────────────────
+
+type LangMap = Record<Language, string>;
+type LangFn<T extends unknown[]> = Record<Language, (...args: T) => string>;
+
+/** Quick accessor — returns the value for the given language, falling back to 'en'. */
+function sl(map: LangMap, lang: Language): string {
+  return map[lang] ?? map.en;
+}
+function sf<T extends unknown[]>(map: LangFn<T>, lang: Language, ...args: T): string {
+  return (map[lang] ?? map.en)(...args);
+}
+
+const SUPPORT_T = {
+  // ── startSupportServicesStep ───────────────────────────────────────────────
+  svcMenuTitle: {
+    en:  (emoji: string, label: string) => `${emoji} *Let's set up your ${label} menu!*\n\nFirst — where do your customers receive your services?`,
+    pid: (emoji: string, label: string) => `${emoji} *Make we set up your ${label} menu!*\n\nFirst — where your customers dey collect your service?`,
+    ig:  (emoji: string, label: string) => `${emoji} *Ka anyị hazie menu ${label} gị!*\n\nNke mbụ — ebee ndị ahịa gị na-enweta ọrụ gị?`,
+    yo:  (emoji: string, label: string) => `${emoji} *Jẹ ká ṣètò àtòjọ ${label} rẹ!*\n\nNí àkọ́kọ́ — níbo ni àwọn onígbọ̀wọ́ rẹ ti ń gbà ìpèsè rẹ?`,
+    ha:  (emoji: string, label: string) => `${emoji} *Bari mu saita menu ${label} ku!*\n\nNa farko — ina abokan ciniki ku ke karɓar sabis ku?`,
+  } as LangFn<[string, string]>,
+
+  // ── Location type confirmed + list prompt ──────────────────────────────────
+  svcLocConfirm: {
+    en:  (locLabel: string, serviceLabel: string) =>
+      `✅ Got it — ${locLabel}\n\nNow list your ${serviceLabel.toLowerCase()}! You can write them however makes sense for your business:\n\n_Shirt — ₦800_\n_Senator wear — ₦1,500_\n_Regular wash — ₦500 per kg_\n_Ironing only — ₦500 flat_\n_Pick up and delivery — ₦1,000_\n\nList as many as you like, then type *DONE* when finished.`,
+    pid: (locLabel: string, serviceLabel: string) =>
+      `✅ I don hear — ${locLabel}\n\nNow list your ${serviceLabel.toLowerCase()}! You fit write them however e make sense for your business:\n\n_Shirt — ₦800_\n_Senator wear — ₦1,500_\n_Regular wash — ₦500 per kg_\n_Ironing only — ₦500 flat_\n_Pick up and delivery — ₦1,000_\n\nList as many as you want, then type *DONE* when you finish.`,
+    ig:  (locLabel: string, serviceLabel: string) =>
+      `✅ Enwetara m — ${locLabel}\n\nKa ị depụta ${serviceLabel.toLowerCase()} gị ugbu a! I nwere ike ide ha ka ọ bụla dị mma maka azụmaahịa gị:\n\n_Kọọtụ — ₦800_\n_Ịkwụ ụgwọ kwa uro — ₦500_\n\nDepụta ole i chọrọ, wee pịa *DONE* mgbe i mechara.`,
+    yo:  (locLabel: string, serviceLabel: string) =>
+      `✅ Mo gbọ́ — ${locLabel}\n\nNísisìyí ṣe àkójọ ${serviceLabel.toLowerCase()} rẹ! O lè kọ wọn bíi o ti fẹ́ fún iṣòwò rẹ:\n\n_Aṣọ — ₦800_\n_Wíwẹ gbogbo ara — ₦500_\n\nṢe àkójọ bí o ti fẹ́, lẹ́hìn náà tẹ *DONE* nígbàtí o parí.`,
+    ha:  (locLabel: string, serviceLabel: string) =>
+      `✅ Na ji — ${locLabel}\n\nYanzun lissafin ${serviceLabel.toLowerCase()} ku! Zaka iya rubuta su yadda ya dace da kasuwancin ku:\n\n_Rigar — ₦800_\n_Wanka kowace rana — ₦500_\n\nRubuta duk wanda kuke so, sannan buga *DONE* idan kun kammala.`,
+  } as LangFn<[string, string]>,
+
+  // ── Pending gate: CONFIRM_SERVICES ────────────────────────────────────────
+  svcConfirmed: {
+    en:  (names: string, total: number) => `✅ ${names} added!\n\nYou have *${total}* service${total !== 1 ? 's' : ''} so far.\n\nSend more services or type *DONE* to continue. 😊`,
+    pid: (names: string, total: number) => `✅ ${names} don enter!\n\nYou get *${total}* service${total !== 1 ? 's' : ''} so far.\n\nSend more service or type *DONE* to continue. 😊`,
+    ig:  (names: string, total: number) => `✅ Etinye ${names}!\n\nI nwere *${total}* ọrụ${total !== 1 ? '' : ''} ugbu a.\n\nZiga ọrụ ndị ọzọ ma ọ bụ pịa *DONE* ka i gaa n'ihu. 😊`,
+    yo:  (names: string, total: number) => `✅ ${names} ti fíẹ kún!\n\nO ní *${total}* ìpèsè tí a bọ́ mọ́ tẹ́lẹ̀.\n\nFi àwọn ìpèsè mìíràn kún tàbí pọn *DONE* láti bá a lọ. 😊`,
+    ha:  (names: string, total: number) => `✅ ${names} an ƙara!\n\nKuna da *${total}* sabis har yanzu.\n\nAika ƙarin sabis ko buga *DONE* don ci gaba. 😊`,
+  } as LangFn<[string, number]>,
+
+  // ── Pending gate: CANCEL_SERVICES ─────────────────────────────────────────
+  svcCancelled: {
+    en:  `No problem! Send your services again — any format works. 😊`,
+    pid: `No wahala! Send your services again — any format dey work. 😊`,
+    ig:  `Ọ dịghị nsogbu! Ziputakwa ọrụ gị ọzọ — ụdị ọ bụla na-arụ ọrụ. 😊`,
+    yo:  `Kò sí ìṣòro! Fi àwọn ìpèsè rẹ ránṣẹ́ lẹ́ẹ̀kan sí i — ìdánwò eyíkeyi ṣiṣẹ́. 😊`,
+    ha:  `Babu matsala! Aika sabis ɗin ku sake — kowanne tsari yana aiki. 😊`,
+  } as LangMap,
+
+  // ── DONE with no services ──────────────────────────────────────────────────
+  svcNoneYet: {
+    en:  `You haven't added any services yet! Send your first service to continue. 😊`,
+    pid: `You never add any service yet! Send your first service to continue. 😊`,
+    ig:  `Ị adịghị etinye ọrụ ọ bụla ka! Zipụ ọrụ mbụ gị ka i gaa n'ihu. 😊`,
+    yo:  `O kò tíì fi ìpèsè kankan kún! Fi ìpèsè àkọ́kọ́ rẹ ránṣẹ́ láti bá a lọ. 😊`,
+    ha:  `Ba ku ƙara wani sabis ba tukuna! Aika sabis ɗin farko ku don ci gaba. 😊`,
+  } as LangMap,
+
+  // ── Parse error ────────────────────────────────────────────────────────────
+  svcParseError: {
+    en:
+      `I couldn't quite catch that. Try something like:\n\n` +
+      `_Shirt — ₦800_\n_Regular wash — ₦500 per kg_\n_Pick up and delivery — ₦1,000_\n\n` +
+      `Or list several at once: _"Shirt 800, trousers 1000, suit 3500"_ 😊`,
+    pid:
+      `I no understand wetin you write. Try am like this:\n\n` +
+      `_Shirt — ₦800_\n_Regular wash — ₦500 per kg_\n_Pick up and delivery — ₦1,000_\n\n` +
+      `Or list many at once: _"Shirt 800, trousers 1000, suit 3500"_ 😊`,
+    ig:
+      `Enweghị m ike ịghọta ya. Nwalee ihe dị otú a:\n\n` +
+      `_Kọọtụ — ₦800_\n_Ịsa ọcha oge niile — ₦500 kwa kg_\n_Ịkwọ na ibu — ₦1,000_\n\n` +
+      `Ma ọ bụ depụta ọtụtụ n'otu oge: _"Kọọtụ 800, trowza 1000, sutu 3500"_ 😊`,
+    yo:
+      `Mi ò lè mọ ohun tí o kọ. Gbìyànjú irú rẹ:\n\n` +
+      `_Aṣọ — ₦800_\n_Wíwẹ déédéé — ₦500 fún kg_\n_Gbígba àti gbígbé lọ — ₦1,000_\n\n` +
+      `Tàbí ṣe àkójọ àwọn ọ̀pọ̀lọpọ̀ lọ́kan sì: _"Aṣọ 800, trouser 1000, suit 3500"_ 😊`,
+    ha:
+      `Ban fahimci abin da kuka rubuta ba. Gwada kamar haka:\n\n` +
+      `_Riga — ₦800_\n_Wanki na yau da kullum — ₦500 a kowanne kg_\n_Ɗaukar kaya — ₦1,000_\n\n` +
+      `Ko lissafin da yawa a lokaci ɗaya: _"Riga 800, wandon 1000, suit 3500"_ 😊`,
+  } as LangMap,
+
+  // ── showPendingServicesConfirmation ────────────────────────────────────────
+  svcGotItSingle: {
+    en:  (emoji: string, name: string, price: string) => `Got it! Here's what I'm adding:\n\n${emoji} *${name}*\n💰 ${price}\n\nIs this correct?`,
+    pid: (emoji: string, name: string, price: string) => `I don see am! This na wetin I wan add:\n\n${emoji} *${name}*\n💰 ${price}\n\nE correct?`,
+    ig:  (emoji: string, name: string, price: string) => `Nwetara m! Nke a bụ ihe m na-etinye:\n\n${emoji} *${name}*\n💰 ${price}\n\nO dị mma?`,
+    yo:  (emoji: string, name: string, price: string) => `Mo gbọ́! Ìyí ni mo ń fi kún:\n\n${emoji} *${name}*\n💰 ${price}\n\nṢé o tọ̀?`,
+    ha:  (emoji: string, name: string, price: string) => `Na sami! Wannan ne zan ƙara:\n\n${emoji} *${name}*\n💰 ${price}\n\nYa dace?`,
+  } as LangFn<[string, string, string]>,
+
+  svcGotItMulti: {
+    en:  (lines: string, count: number) => `Got it! Here's what I'm adding:\n\n${lines}\n\nSave all ${count} services?`,
+    pid: (lines: string, count: number) => `I don see them! This na wetin I wan add:\n\n${lines}\n\nSave all ${count} service?`,
+    ig:  (lines: string, count: number) => `Nwetara m! Ndị a bụ ihe m na-etinye:\n\n${lines}\n\nChekwaa ọrụ ${count} niile?`,
+    yo:  (lines: string, count: number) => `Mo gbọ́! Ìwọnyí ni mo ń fi kún:\n\n${lines}\n\nFipamọ́ gbogbo ìpèsè ${count}?`,
+    ha:  (lines: string, count: number) => `Na sami! Waɗannan ne zan ƙara:\n\n${lines}\n\nAdana duk sabis ${count}?`,
+  } as LangFn<[string, number]>,
+
+  // ── advanceToFaqStep ───────────────────────────────────────────────────────
+  faqTeach: {
+    en:
+      `🧠 *Teach your bot!*\n\n` +
+      `Add common customer questions and answers so I can handle enquiries automatically.\n\n` +
+      `Format each FAQ like this:\n` +
+      `*Q: Your question here?*\n*A: Your answer here.*\n\n` +
+      `Example:\n*Q: Do you offer same-day service?*\n*A: Yes! Same-day is available for ₦500 extra within Lagos.*\n\n` +
+      `You can add multiple FAQs at once. Type *SKIP* to set up payment first and add FAQs later.`,
+    pid:
+      `🧠 *Teach your bot!*\n\n` +
+      `Add common customer question and answer so I fit handle enquiry automatically.\n\n` +
+      `Format each FAQ like this:\n` +
+      `*Q: Your question here?*\n*A: Your answer here.*\n\n` +
+      `Example:\n*Q: You dey do same day service?*\n*A: Yes! Same day dey available for ₦500 extra inside Lagos.*\n\n` +
+      `You fit add plenty FAQ at once. Type *SKIP* to set up payment first and add FAQ later.`,
+    ig:
+      `🧠 *Kụziere bot gị!*\n\n` +
+      `Tinye ajụjụ ndị ahịa na aza ha ka m nwee ike ikwado ajụjụ na-akpaaka.\n\n` +
+      `Hazie FAQ nke ọ bụla dị otú a:\n` +
+      `*Q: Ajụjụ gị ebe a?*\n*A: Aza gị ebe a.*\n\n` +
+      `Ihe atụ:\n*Q: Ị na-eme ọrụ otu ụbọchị?*\n*A: Ee! Ọ dị n'ọnọdụ maka ₦500 ọzọ n'ime Lagos.*\n\n` +
+      `I nwere ike itinye ọtụtụ FAQ n'otu oge. Pịa *SKIP* ka i hazie ọkwụ ụgwọ gaa n'ihu.`,
+    yo:
+      `🧠 *Kọ́ bọọtì rẹ!*\n\n` +
+      `Fi àwọn ìbéèrè àti àwọn ìdáhùn àwọn onígbọ̀wọ́ tó wọ́pọ̀ kún kí n lè ṣàkóso àwọn ìbéèrè fúnra rẹ̀ àtọwọ́dọwọ́.\n\n` +
+      `Formatì FAQ kọ̀ọ̀kan bíi èyí:\n` +
+      `*Q: Ìbéèrè rẹ níbí?*\n*A: Ìdáhùn rẹ níbí.*\n\n` +
+      `Àpẹẹrẹ:\n*Q: Ṣé ẹ ń fúnni ní ìpèsè ọjọ́ kan náà?*\n*A: Bẹẹni! Ọjọ́ kan náà wà fún ₦500 àfikún ní Lágọ̀s.*\n\n` +
+      `O lè fi ọ̀pọ̀lọpọ̀ FAQ kun lọ́kan sì. Pọn *SKIP* láti ṣètò owó ìsanwó àkọ́kọ́.`,
+    ha:
+      `🧠 *Koyar da bot ɗin ku!*\n\n` +
+      `Ƙara tambayoyin abokan ciniki da amsoshi domin in iya sarrafa tambayoyi ta atomatik.\n\n` +
+      `Formatance kowace FAQ haka:\n` +
+      `*Q: Tambayar ku anan?*\n*A: Amsar ku anan.*\n\n` +
+      `Misali:\n*Q: Kuna yi sabis ɗin rana guda?*\n*A: Eh! Ana samun ranar guda akan ₦500 ƙari a cikin Lagos.*\n\n` +
+      `Za ku iya ƙara FAQs da yawa a lokaci ɗaya. Buga *SKIP* don saita biyan kuɗi da farko.`,
+  } as LangMap,
+
+  // ── handleSupportAddingFaqs parse error ────────────────────────────────────
+  faqParseError: {
+    en:
+      `I couldn't extract a Q&A pair from that. Please use this format:\n\n` +
+      `*Q: Do you offer home service?*\n*A: Yes! We pick up and deliver same day.*\n\n` +
+      `Or type *SKIP* to continue without FAQs. 😊`,
+    pid:
+      `I no fit extract Q&A pair from that. Please use this format:\n\n` +
+      `*Q: You dey do home service?*\n*A: Yes! We dey pick up and deliver same day.*\n\n` +
+      `Or type *SKIP* to continue without FAQ. 😊`,
+    ig:
+      `Enweghị m ike ịwepụta ụzo Q&A sitere n'ya. Jiri ụdị a:\n\n` +
+      `*Q: Ị na-enye ọrụ ụlọ?*\n*A: Ee! Anyị na-agwọta ma nnyefe n'otu ụbọchị.*\n\n` +
+      `Ma ọ bụ pịa *SKIP* ka i gaa n'ihu na-enweghị FAQ. 😊`,
+    yo:
+      `Mi ò lè yọ ọ̀wọ̀n Q&A jáde. Jọ̀wọ́ lo ìdánwò yìí:\n\n` +
+      `*Q: Ṣé ẹ ń fúnni ní ìpèsè ilé?*\n*A: Bẹẹni! A máa ń gbà àti jiṣẹ́ ní ọjọ́ kan náà.*\n\n` +
+      `Tàbí pọn *SKIP* láti bá a lọ láìsí FAQs. 😊`,
+    ha:
+      `Ba zan iya fitar da ɗan Q&A ba. Don Allah yi amfani da wannan format:\n\n` +
+      `*Q: Kuna yi sabis ɗin gida?*\n*A: Eh! Muna ɗaukar kaya kuma muna kai a rana guda.*\n\n` +
+      `Ko buga *SKIP* don ci gaba ba tare da FAQs ba. 😊`,
+  } as LangMap,
+
+  // ── handleSupportAddingFaqs saved ──────────────────────────────────────────
+  faqSaved: {
+    en:  (count: number, total: number, lines: string) => `✅ FAQ${count > 1 ? 's' : ''} saved!\n\n${lines}\n\nYou now have *${total}* FAQ${total !== 1 ? 's' : ''}. Add more or type *DONE* to continue with payment setup.`,
+    pid: (count: number, total: number, lines: string) => `✅ FAQ${count > 1 ? 's' : ''} don save!\n\n${lines}\n\nYou don get *${total}* FAQ${total !== 1 ? 's' : ''} now. Add more or type *DONE* to continue with payment setup.`,
+    ig:  (count: number, total: number, lines: string) => `✅ Zachara FAQ${count > 1 ? '' : ''}!\n\n${lines}\n\nI nwere ugbu a *${total}* FAQ${total !== 1 ? '' : ''}. Tinye ndị ọzọ ma ọ bụ pịa *DONE* ka i gaa n'ihu.`,
+    yo:  (count: number, total: number, lines: string) => `✅ FAQ${count > 1 ? 's' : ''} ti fipamọ́!\n\n${lines}\n\nO ní *${total}* FAQ${total !== 1 ? 's' : ''} nísisìyí. Fi àwọn mìíràn kún tàbí pọn *DONE* láti bá a lọ.`,
+    ha:  (count: number, total: number, lines: string) => `✅ FAQ${count > 1 ? 's' : ''} an adana!\n\n${lines}\n\nKuna da *${total}* FAQ${total !== 1 ? 's' : ''} yanzu. Ƙara ƙari ko buga *DONE* don ci gaba.`,
+  } as LangFn<[number, number, string]>,
+
+  // ── advanceToPaymentSetup ──────────────────────────────────────────────────
+  paymentSetup: {
+    en:
+      `Almost done! 🎉 Let's set up how your customers will pay.\n\n` +
+      `*⚡ Paystack Transfer* — Customers transfer to a dedicated virtual account. Payment is confirmed automatically.\n\n` +
+      `*🏦 Bank Transfer* — Customers transfer to your regular bank account and you manually confirm receipt.\n\n` +
+      `Which would you prefer?`,
+    pid:
+      `Almost done! 🎉 Make we set up how your customers go pay.\n\n` +
+      `*⚡ Paystack Transfer* — Customers go transfer to dedicated virtual account. Payment go confirm automatically.\n\n` +
+      `*🏦 Bank Transfer* — Customers go transfer to your regular bank account and you go confirm am yourself.\n\n` +
+      `Which one you prefer?`,
+    ig:
+      `Eruo na njedebe! 🎉 Ka anyị hazie otu ndị ahịa gị ga-akwụ ụgwọ.\n\n` +
+      `*⚡ Paystack Transfer* — Ndị ahịa na-ebugafe na akaụntụ vachi pụrụ iche. A na-akwado ịkwụ ụgwọ na-akpaaka.\n\n` +
+      `*🏦 Bank Transfer* — Ndị ahịa na-ebugafe na akaụntụ ụlọ akụ nke gị ma i kwado na aka.\n\n` +
+      `Kedu nke ịchọrọ?`,
+    yo:
+      `Ó fẹ́rẹ̀ parí! 🎉 Jẹ ká ṣètò bí àwọn onígbọ̀wọ́ rẹ yóò sanwó.\n\n` +
+      `*⚡ Paystack Transfer* — Àwọn onígbọ̀wọ́ máa ń gbà sí akaùntì àpẹẹrẹ tó yàtọ̀. A ó fọwọ́ sí ìsanwó lọ́tọ̀-ọtọ̀.\n\n` +
+      `*🏦 Bank Transfer* — Àwọn onígbọ̀wọ́ máa ń gbà sí akaùntì bánkì rẹ dáadáa kí o sì fọwọ́ sí fúnra rẹ.\n\n` +
+      `Etí wo ni o fẹ́?`,
+    ha:
+      `Kusan kammala! 🎉 Bari mu saita yadda abokan ciniki ku za su biya.\n\n` +
+      `*⚡ Paystack Transfer* — Abokan ciniki suna canja zuwa asusu na musamman. Ana tabbatar da biyan kuɗi ta atomatik.\n\n` +
+      `*🏦 Bank Transfer* — Abokan ciniki suna canja zuwa asusun bankin ku na yau da kullum kuma ku tabbatar da karɓar da hannun ku.\n\n` +
+      `Wanne kuke son?`,
+  } as LangMap,
+
+  // ── handleSupportConfirmation bank re-enter ────────────────────────────────
+  bankReEnter: {
+    en:  `No problem! Please re-enter your bank details:\n*Bank Name | Account Number | Account Name*\n\nExample: _GTBank | 0123456789 | Mallam Ahmed Suya_`,
+    pid: `No wahala! Please type your bank details again:\n*Bank Name | Account Number | Account Name*\n\nExample: _GTBank | 0123456789 | Mallam Ahmed Suya_`,
+    ig:  `Ọ dịghị nsogbu! Biko tinye nkọwa ụlọ akụ gị ọzọ:\n*Bank Name | Account Number | Account Name*\n\nIhe atụ: _GTBank | 0123456789 | Chukwuemeka Obi_`,
+    yo:  `Kò sí ìṣòro! Jọ̀wọ́ tún fi àwọn àlàyé bánkì rẹ kún:\n*Bank Name | Account Number | Account Name*\n\nÀpẹẹrẹ: _GTBank | 0123456789 | Àdùnọlá Akínwálé_`,
+    ha:  `Babu matsala! Don Allah shigar da bayanan bankin ku sake:\n*Bank Name | Account Number | Account Name*\n\nMisali: _GTBank | 0123456789 | Mallam Ahmed Suya_`,
+  } as LangMap,
+
+  // ── CHANGE prompt ──────────────────────────────────────────────────────────
+  changePrompt: {
+    en:  `What would you like to change? Just tell me and I'll update it. 😊`,
+    pid: `Wetin you wan change? Just tell me and I go update am. 😊`,
+    ig:  `Gịnị ka ị chọrọ ịgbanwe? Naanị gwa m ma m ga-emelite ya. 😊`,
+    yo:  `Kí ni o fẹ́ yí padà? Sọ fún mi nìkan kí n mú u ṣe àtúnṣe. 😊`,
+    ha:  `Mene ne kuke son canzawa? Kawai gaya mani kuma zan sabunta shi. 😊`,
+  } as LangMap,
+
+  // ── showSupportConfirmation footer ────────────────────────────────────────
+  summaryGoLive: {
+    en:  `Everything look good? Tap *Go Live* to launch your support page!`,
+    pid: `Everything look correct? Tap *Go Live* to launch your support page!`,
+    ig:  `Ihe niile dị mma? Pịa *Go Live* ka i malite ibe nkwado gị!`,
+    yo:  `Gbogbo ohun wo dára? Tẹ *Go Live* láti ṣí ojú-ewé ìtìlẹ́yìn rẹ!`,
+    ha:  `Komai yayi kyau? Danna *Go Live* don ƙaddamar da shafin tallafi ku!`,
+  } as LangMap,
+
+  // ── activateSupportStore message 1 ────────────────────────────────────────
+  activated: {
+    en:  (name: string, link: string) =>
+      `🚀 *${name} is now LIVE on Pingmart!*\n\n` +
+      `🔗 *Your Store Link*\n${link}\n\n` +
+      `_Share this link with customers and they can:_\n` +
+      `📋 View your services\n📅 Book appointments\n💬 Ask questions — answered by your bot 24/7\n\n` +
+      `📣 *Share your link on:*\n📱 WhatsApp Status · 📸 Instagram Bio · 💬 Customer groups`,
+    pid: (name: string, link: string) =>
+      `🚀 *${name} don go LIVE on Pingmart!*\n\n` +
+      `🔗 *Your Store Link*\n${link}\n\n` +
+      `_Share this link with your customers make dem:_\n` +
+      `📋 See your services\n📅 Book appointment\n💬 Ask question — your bot go answer 24/7\n\n` +
+      `📣 *Share your link for:*\n📱 WhatsApp Status · 📸 Instagram Bio · 💬 Customer groups`,
+    ig:  (name: string, link: string) =>
+      `🚀 *${name} adị ugbu a LIVE na Pingmart!*\n\n` +
+      `🔗 *Link Ụlọ Ahịa Gị*\n${link}\n\n` +
+      `_Kesaa link a nye ndị ahịa gị ka ha nwee ike:_\n` +
+      `📋 Lelee ọrụ gị\n📅 Mee nkwa\n💬 Ajụọ ajụjụ — bot gị ga-aza 24/7\n\n` +
+      `📣 *Kesaa link gị na:*\n📱 WhatsApp Status · 📸 Instagram Bio · 💬 Otu ndị ahịa`,
+    yo:  (name: string, link: string) =>
+      `🚀 *${name} ti wà ní LIVE lórí Pingmart!*\n\n` +
+      `🔗 *Atọ Ilé Ìtajà Rẹ*\n${link}\n\n` +
+      `_Pin atọ yìí fún àwọn onígbọ̀wọ́ rẹ kí wọ́n lè:_\n` +
+      `📋 Wo àwọn ìpèsè rẹ\n📅 Ṣe àkọsílẹ̀ àpẹjọ\n💬 Béèrè àwọn ìbéèrè — bọọtì rẹ máa ń dáhùn 24/7\n\n` +
+      `📣 *Pín atọ rẹ lórí:*\n📱 WhatsApp Status · 📸 Instagram Bio · 💬 Àwọn ẹgbẹ́ onígbọ̀wọ́`,
+    ha:  (name: string, link: string) =>
+      `🚀 *${name} yanzu yana LIVE a Pingmart!*\n\n` +
+      `🔗 *Haɗin Kantin ku*\n${link}\n\n` +
+      `_Raba wannan haɗin da abokan ciniki ku domin su iya:_\n` +
+      `📋 Kalli sabis ɗin ku\n📅 Yi randevú\n💬 Yi tambayoyi — bot ɗin ku zai amsa 24/7\n\n` +
+      `📣 *Raba haɗin ku a:*\n📱 WhatsApp Status · 📸 Instagram Bio · 💬 Ƙungiyoyin abokan ciniki`,
+  } as LangFn<[string, string]>,
+
+  // ── activateSupportStore dashboard prompt ─────────────────────────────────
+  dashboardPrompt: {
+    en:  `What would you like to do first?`,
+    pid: `Wetin you wan do first?`,
+    ig:  `Gịnị ka ị chọrọ ime izizi?`,
+    yo:  `Kí ni o fẹ́ ṣe àkọ́kọ́?`,
+    ha:  `Me kuke son yi da farko?`,
+  } as LangMap,
+};
+
 function formatHours(data: SupportCollectedData): string {
   if (!data.workingHoursStart) return 'Not set';
   const days = parseDays(data.workingDays);
@@ -134,12 +413,11 @@ export async function startSupportServicesStep(
 ): Promise<void> {
   const emoji = serviceTypeEmoji(data.businessType);
   const label = serviceTypeLabel(data.businessType);
+  const lang  = await getVendorLang(phone);
 
   await messageQueue.add({
     to: phone,
-    message:
-      `${emoji} *Let's set up your ${label} menu!*\n\n` +
-      `First — where do your customers receive your services?`,
+    message: sf(SUPPORT_T.svcMenuTitle, lang, emoji, label),
     buttons: [
       { id: 'SVC_LOC:fixed',  title: '🏠 Fixed Location' },
       { id: 'SVC_LOC:pickup', title: '🚚 We Come to Them' },
@@ -157,9 +435,10 @@ export async function handleSupportAddingServices(
   session: VendorSetupSession,
   data: SupportCollectedData,
 ): Promise<void> {
-  const trimmed = message.trim();
-  const upper   = trimmed.toUpperCase();
+  const trimmed  = message.trim();
+  const upper    = trimmed.toUpperCase();
   const services = data.services ?? [];
+  const lang     = await getVendorLang(phone);
 
   // ── 1. Location type selection buttons ───────────────────────────────────
   if (trimmed.startsWith('SVC_LOC:')) {
@@ -177,15 +456,7 @@ export async function handleSupportAddingServices(
     const label = serviceTypeLabel(data.businessType);
     await messageQueue.add({
       to: phone,
-      message:
-        `✅ Got it — ${locationTypeLabel(loc)}\n\n` +
-        `Now list your ${label.toLowerCase()}! You can write them however makes sense for your business:\n\n` +
-        `_Shirt — ₦800_\n` +
-        `_Senator wear — ₦1,500_\n` +
-        `_Regular wash — ₦500 per kg_\n` +
-        `_Ironing only — ₦500 flat_\n` +
-        `_Pick up and delivery — ₦1,000_\n\n` +
-        `List as many as you like, then type *DONE* when finished.`,
+      message: sf(SUPPORT_T.svcLocConfirm, lang, locationTypeLabel(loc), label),
     });
     return;
   }
@@ -212,10 +483,7 @@ export async function handleSupportAddingServices(
       const names = data.pendingServices.map((s) => `*${s.name}*`).join(', ');
       await messageQueue.add({
         to: phone,
-        message:
-          `✅ ${names} added!\n\n` +
-          `You have *${newServices.length}* service${newServices.length !== 1 ? 's' : ''} so far.\n\n` +
-          `Send more services or type *DONE* to continue. 😊`,
+        message: sf(SUPPORT_T.svcConfirmed, lang, names, newServices.length),
       });
       return;
     }
@@ -228,13 +496,13 @@ export async function handleSupportAddingServices(
       });
       await messageQueue.add({
         to: phone,
-        message: `No problem! Send your services again — any format works. 😊`,
+        message: sl(SUPPORT_T.svcCancelled, lang),
       });
       return;
     }
 
     // Anything else — re-show the confirmation
-    await showPendingServicesConfirmation(phone, data.pendingServices, data.businessType);
+    await showPendingServicesConfirmation(phone, data.pendingServices, data.businessType, lang);
     return;
   }
 
@@ -243,7 +511,7 @@ export async function handleSupportAddingServices(
     if (services.length === 0) {
       await messageQueue.add({
         to: phone,
-        message: `You haven't added any services yet! Send your first service to continue. 😊`,
+        message: sl(SUPPORT_T.svcNoneYet, lang),
       });
       return;
     }
@@ -262,12 +530,7 @@ export async function handleSupportAddingServices(
   if (!extracted || extracted.length === 0) {
     await messageQueue.add({
       to: phone,
-      message:
-        `I couldn't quite catch that. Try something like:\n\n` +
-        `_Shirt — ₦800_\n` +
-        `_Regular wash — ₦500 per kg_\n` +
-        `_Pick up and delivery — ₦1,000_\n\n` +
-        `Or list several at once: _"Shirt 800, trousers 1000, suit 3500"_ 😊`,
+      message: sl(SUPPORT_T.svcParseError, lang),
     });
     return;
   }
@@ -290,23 +553,17 @@ async function showPendingServicesConfirmation(
   phone: string,
   services: ServiceItemInput[],
   businessType?: string,
+  lang: Language = 'en',
 ): Promise<void> {
   const emoji = serviceTypeEmoji(businessType);
 
   let body: string;
   if (services.length === 1) {
     const s = services[0]!;
-    body =
-      `Got it! Here's what I'm adding:\n\n` +
-      `${emoji} *${s.name}*\n` +
-      `💰 ${formatPricing(s.price, s.unit)}\n\n` +
-      `Is this correct?`;
+    body = sf(SUPPORT_T.svcGotItSingle, lang, emoji, s.name, formatPricing(s.price, s.unit));
   } else {
-    const lines = services.map((s) => `• *${s.name}* — ${formatPricing(s.price, s.unit)}`);
-    body =
-      `Got it! Here's what I'm adding:\n\n` +
-      `${lines.join('\n')}\n\n` +
-      `Save all ${services.length} services?`;
+    const lines = services.map((s) => `• *${s.name}* — ${formatPricing(s.price, s.unit)}`).join('\n');
+    body = sf(SUPPORT_T.svcGotItMulti, lang, lines, services.length);
   }
 
   await messageQueue.add({
@@ -403,18 +660,10 @@ async function advanceToFaqStep(
     data: { step: 'SUPPORT_ADDING_FAQS', collectedData: data as unknown as PrismaJson },
   });
 
+  const lang = await getVendorLang(phone);
   await messageQueue.add({
     to: phone,
-    message:
-      `🧠 *Teach your bot!*\n\n` +
-      `Add common customer questions and answers so I can handle enquiries automatically.\n\n` +
-      `Format each FAQ like this:\n` +
-      `*Q: Your question here?*\n` +
-      `*A: Your answer here.*\n\n` +
-      `Example:\n` +
-      `*Q: Do you offer same-day service?*\n` +
-      `*A: Yes! Same-day is available for ₦500 extra within Lagos.*\n\n` +
-      `You can add multiple FAQs at once. Type *SKIP* to set up payment first and add FAQs later.`,
+    message: sl(SUPPORT_T.faqTeach, lang),
     buttons: [
       { id: 'SKIP_FAQS', title: '⏭️ Skip for Now' },
     ] as InteractiveButton[],
@@ -431,6 +680,7 @@ export async function handleSupportAddingFaqs(
   data: SupportCollectedData,
 ): Promise<void> {
   const upper = message.trim().toUpperCase();
+  const lang  = await getVendorLang(phone);
 
   // Skip → go to payment setup
   if (upper === 'SKIP_FAQS' || upper === 'SKIP' || upper === 'DONE') {
@@ -444,11 +694,7 @@ export async function handleSupportAddingFaqs(
   if (!extracted || extracted.length === 0) {
     await messageQueue.add({
       to: phone,
-      message:
-        `I couldn't extract a Q&A pair from that. Please use this format:\n\n` +
-        `*Q: Do you offer home service?*\n` +
-        `*A: Yes! We pick up and deliver same day.*\n\n` +
-        `Or type *SKIP* to continue without FAQs. 😊`,
+      message: sl(SUPPORT_T.faqParseError, lang),
     });
     return;
   }
@@ -468,10 +714,7 @@ export async function handleSupportAddingFaqs(
 
   await messageQueue.add({
     to: phone,
-    message:
-      `✅ FAQ${extracted.length > 1 ? 's' : ''} saved!\n\n${faqLines}\n\n` +
-      `You now have *${newFaqs.length}* FAQ${newFaqs.length !== 1 ? 's' : ''}. ` +
-      `Add more or type *DONE* to continue with payment setup.`,
+    message: sf(SUPPORT_T.faqSaved, lang, extracted.length, newFaqs.length, faqLines),
     buttons: [
       { id: 'SKIP_FAQS', title: '✅ Done with FAQs' },
     ] as InteractiveButton[],
@@ -523,15 +766,10 @@ async function advanceToPaymentSetup(
     },
   });
 
+  const lang = await getVendorLang(phone);
   await messageQueue.add({
     to: phone,
-    message:
-      `Almost done! 🎉 Let's set up how your customers will pay.\n\n` +
-      `*⚡ Paystack Transfer* — Customers transfer to a dedicated virtual account. ` +
-      `Payment is confirmed automatically.\n\n` +
-      `*🏦 Bank Transfer* — Customers transfer to your regular bank account and ` +
-      `you manually confirm receipt.\n\n` +
-      `Which would you prefer?`,
+    message: sl(SUPPORT_T.paymentSetup, lang),
     buttons: [
       { id: 'PAYMENT_METHOD:paystack_transfer', title: '⚡ Paystack Transfer' },
       { id: 'PAYMENT_METHOD:bank_transfer',     title: '🏦 Bank Transfer' },
@@ -549,6 +787,7 @@ export async function handleSupportConfirmation(
   data: SupportCollectedData,
 ): Promise<void> {
   const upper = message.trim().toUpperCase();
+  const lang  = await getVendorLang(phone);
 
   // Bank details confirmation gate (YES = confirmed, NO = re-enter)
   if (upper === 'YES' && data.bankAccountNumber && !data.bankName?.startsWith('confirmed:')) {
@@ -575,10 +814,7 @@ export async function handleSupportConfirmation(
     });
     await messageQueue.add({
       to: phone,
-      message:
-        `No problem! Please re-enter your bank details:\n` +
-        `*Bank Name | Account Number | Account Name*\n\n` +
-        `Example: _GTBank | 0123456789 | Mallam Ahmed Suya_`,
+      message: sl(SUPPORT_T.bankReEnter, lang),
     });
     return;
   }
@@ -592,7 +828,7 @@ export async function handleSupportConfirmation(
     await showSupportConfirmation(phone, vendor, data);
     await messageQueue.add({
       to: phone,
-      message: `What would you like to change? Just tell me and I'll update it. 😊`,
+      message: sl(SUPPORT_T.changePrompt, lang),
     });
     return;
   }
@@ -606,11 +842,12 @@ export async function showSupportConfirmation(
   vendor: Vendor,
   data: SupportCollectedData,
 ): Promise<void> {
-  const services  = data.services ?? [];
-  const faqs      = data.faqs ?? [];
-  const storeCode = data.storeCode ?? vendor.storeCode ?? 'YOURCODE';
+  const services    = data.services ?? [];
+  const faqs        = data.faqs ?? [];
+  const storeCode   = data.storeCode ?? vendor.storeCode ?? 'YOURCODE';
   const bankDisplay = data.bankName?.replace('confirmed:', '') ?? '—';
-  const emoji     = serviceTypeEmoji(data.businessType);
+  const emoji       = serviceTypeEmoji(data.businessType);
+  const lang        = await getVendorLang(phone);
 
   const topServices = services.slice(0, 5).map((s) =>
     `  • ${s.name} — ₦${s.price.toLocaleString()} ${s.unit}`
@@ -629,7 +866,7 @@ export async function showSupportConfirmation(
     `💳 Payment: ${capitalise(data.paymentMethod ?? 'bank')}${data.bankName ? ` (${bankDisplay})` : ''}\n` +
     `🕐 Hours: ${formatHours(data)}\n` +
     `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `Everything look good? Tap *Go Live* to launch your support page!`;
+    sl(SUPPORT_T.summaryGoLive, lang);
 
   await messageQueue.add({
     to: phone,
@@ -733,25 +970,19 @@ async function activateSupportStore(
 
   logger.info('Support vendor activated', { vendorId: vendor.id, storeCode, phone: maskPhone(phone) });
 
+  const lang = await getVendorLang(phone);
+  const storeLink = `wa.me/${pingmartPhone}?text=${storeCode}`;
+
   // Message 1 — celebration + store link
   await messageQueue.add({
     to: phone,
-    message:
-      `🚀 *${data.businessName} is now LIVE on Pingmart!*\n\n` +
-      `🔗 *Your Store Link*\n` +
-      `wa.me/${pingmartPhone}?text=${storeCode}\n\n` +
-      `_Share this link with customers and they can:_\n` +
-      `📋 View your services\n` +
-      `📅 Book appointments\n` +
-      `💬 Ask questions — answered by your bot 24/7\n\n` +
-      `📣 *Share your link on:*\n` +
-      `📱 WhatsApp Status · 📸 Instagram Bio · 💬 Customer groups`,
+    message: sf(SUPPORT_T.activated, lang, data.businessName ?? 'Your store', storeLink),
   });
 
   // Message 2 — vendor dashboard
   await messageQueue.add({
     to: phone,
-    message: `What would you like to do first?`,
+    message: sl(SUPPORT_T.dashboardPrompt, lang),
     listSections: [
       {
         title: '🛠️ Manage Your Support Page',
