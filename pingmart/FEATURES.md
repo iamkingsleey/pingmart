@@ -49,6 +49,24 @@ Language preference is saved to the user's session and persists across store swi
 
 ---
 
+### Intent Selection Screen
+**Status:** ✅ Built
+
+Shown immediately after language selection. Presented as a WhatsApp List Message with three options and descriptions:
+
+| Option | ID | Routes to |
+|---|---|---|
+| 🏪 Open a product store | `SELL_ON_PINGMART` | Full vendor onboarding (product catalogue flow) |
+| 🛠️ Set up support channel | `SETUP_SUPPORT_CHANNEL` | Support Mode onboarding (service-only category list) |
+| 🛍️ Shop from a store | `SHOP_FROM_STORE` | Store code / link prompt |
+
+- Service businesses selecting "Set up support channel" see only service categories (no product categories shown)
+- Each option has a description subtitle for clarity
+- All 5 languages translated: English, Pidgin, Igbo, Yoruba, Hausa
+- Stale-state guard: button IDs are honoured even if Redis state has expired
+
+---
+
 ### Webhook Handler
 **Status:** ✅ Built
 

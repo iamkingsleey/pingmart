@@ -108,7 +108,7 @@ export async function routeIncomingMessage(
   // want to honour the button tap rather than falling through to unrecognised
   // sender logic and showing the language screen again.
   const msgUpper = message.trim().toUpperCase();
-  if (msgUpper === 'SELL_ON_PINGMART' || msgUpper === 'SHOP_FROM_STORE') {
+  if (msgUpper === 'SELL_ON_PINGMART' || msgUpper === 'SHOP_FROM_STORE' || msgUpper === 'SETUP_SUPPORT_CHANNEL') {
     await handleShopOrSellReply(senderPhone, message);
     return;
   }
@@ -125,7 +125,7 @@ export async function routeIncomingMessage(
   // Guard: router button IDs (SELL_ON_PINGMART, SHOP_FROM_STORE) technically
   // match STORE_CODE_REGEX. Exclude them explicitly so a stale/missing Redis
   // SHOP_OR_SELL state never misroutes a button tap as a store code lookup.
-  const ROUTER_BUTTON_IDS = new Set(['SELL_ON_PINGMART', 'SHOP_FROM_STORE']);
+  const ROUTER_BUTTON_IDS = new Set(['SELL_ON_PINGMART', 'SHOP_FROM_STORE', 'SETUP_SUPPORT_CHANNEL']);
   const potentialCode = message.trim().toUpperCase();
   if (!ROUTER_BUTTON_IDS.has(potentialCode) && STORE_CODE_REGEX.test(potentialCode)) {
     const vendorByCode = await prisma.vendor.findFirst({
@@ -253,19 +253,25 @@ async function handleShopOrSellReply(phone: string, message: string): Promise<vo
   // Resolve the customer's saved language for translated responses
   const customer = await customerRepository.findByWhatsAppNumber(phone);
   const lang: Language = (customer?.language as Language | undefined) ?? 'en';
-  const t = SHOP_OR_SELL_STRINGS[lang];
+  const s = INTENT_STRINGS[lang];
 
-  // Accept both button IDs (primary) and legacy numeric replies (fallback)
-  const isSell = choice === 'SELL_ON_PINGMART' || choice === '2';
-  const isShop = choice === 'SHOP_FROM_STORE'  || choice === '1';
+  // Accept both list row IDs (primary) and legacy numeric replies (fallback)
+  const isSell    = choice === 'SELL_ON_PINGMART'      || choice === '2';
+  const isSupport = choice === 'SETUP_SUPPORT_CHANNEL' || choice === '3';
+  const isShop    = choice === 'SHOP_FROM_STORE'        || choice === '1';
 
-  if (isShop) {
-    await messageQueue.add({ to: phone, message: t.shopRedirect });
+  if (isSell) {
+    await startVendorOnboarding(phone, false);
     return;
   }
 
-  if (isSell) {
-    await startVendorOnboarding(phone);
+  if (isSupport) {
+    await startVendorOnboarding(phone, true);
+    return;
+  }
+
+  if (isShop) {
+    await messageQueue.add({ to: phone, message: s.shopRedirect });
     return;
   }
 
@@ -505,18 +511,26 @@ async function handleLangInitReply(phone: string, message: string): Promise<void
   await showShopOrSellScreen(phone, lang);
 }
 
-// ─── Shop-or-Sell translations ───────────────────────────────────────────────
+// ─── Intent selection translations (3-option screen) ─────────────────────────
 
-const SHOP_OR_SELL_STRINGS: Record<Language, {
-  question:     string;
-  sellLabel:    string;
-  shopLabel:    string;
-  shopRedirect: string;
+const INTENT_STRINGS: Record<Language, {
+  question:      string;
+  sellLabel:     string;
+  sellDesc:      string;
+  supportLabel:  string;
+  supportDesc:   string;
+  shopLabel:     string;
+  shopDesc:      string;
+  shopRedirect:  string;
 }> = {
   en: {
-    question:     `What would you like to do today?`,
-    sellLabel:    `🏪 Sell on Pingmart`,
+    question:     `What brings you to Pingmart today?`,
+    sellLabel:    `🏪 Open a product store`,
+    sellDesc:     `Sell physical or digital products on WhatsApp`,
+    supportLabel: `🛠️ Set up support channel`,
+    supportDesc:  `Manage bookings & enquiries for your service business`,
     shopLabel:    `🛍️ Shop from a store`,
+    shopDesc:     `Browse and buy from a vendor's store`,
     shopRedirect:
       `To shop, you need a store link from a vendor.\n\n` +
       `Ask the vendor to share their Pingmart link with you —\n` +
@@ -525,8 +539,12 @@ const SHOP_OR_SELL_STRINGS: Record<Language, {
   },
   pid: {
     question:     `Wetin carry you come Pingmart?`,
-    sellLabel:    `🏪 I wan sell`,
-    shopLabel:    `🛍️ I wan shop`,
+    sellLabel:    `🏪 I wan open shop`,
+    sellDesc:     `Start selling your products for Pingmart`,
+    supportLabel: `🛠️ I get service biz`,
+    supportDesc:  `Set up bookings and customer support`,
+    shopLabel:    `🛍️ I wan buy something`,
+    shopDesc:     `Shop from vendor wey dey sell for here`,
     shopRedirect:
       `To shop, you need store link from vendor.\n\n` +
       `Ask the vendor make dem share their Pingmart link with you —\n` +
@@ -535,8 +553,12 @@ const SHOP_OR_SELL_STRINGS: Record<Language, {
   },
   ig: {
     question:     `Gịnị ka ị chọrọ ime taa?`,
-    sellLabel:    `🏪 Achọrọ m ire ihe`,
+    sellLabel:    `🏪 Imeghe ụlọ ahịa`,
+    sellDesc:     `Ree ihe gị na WhatsApp`,
+    supportLabel: `🛠️ Iji maka ọrụ m`,
+    supportDesc:  `Njikwa ndépụta na ajụjụ ndị ahịa`,
     shopLabel:    `🛍️ Achọrọ m ịzụ ihe`,
+    shopDesc:     `Zụta ihe site n'ụlọ ahịa onye na-ere`,
     shopRedirect:
       `Iji zụta ihe, ị chọrọ njikọ ụlọ ahịa sitere n'aka onye na-ere ahịa.\n\n` +
       `Jụọ onye na-ere ahịa ka ha kesaa njikọ Pingmart ha —\n` +
@@ -545,8 +567,12 @@ const SHOP_OR_SELL_STRINGS: Record<Language, {
   },
   yo: {
     question:     `Kini o fẹ ṣe loni?`,
-    sellLabel:    `🏪 Mo fẹ ta nkan`,
+    sellLabel:    `🏪 Mo fẹ ṣeto ile itaja`,
+    sellDesc:     `Ta awọn ọja rẹ lori WhatsApp`,
+    supportLabel: `🛠️ Mo fẹ lo fun iṣẹ mi`,
+    supportDesc:  `Ṣakoso awọn ipinnu lati pade ati ibeere`,
     shopLabel:    `🛍️ Mo fẹ ra nkan`,
+    shopDesc:     `Ra nkan lati ile itaja olutaja`,
     shopRedirect:
       `Lati ra nkan, o nilo ọna asopọ itaja lati ọdọ olutaja.\n\n` +
       `Bi olutaja lati pin ọna asopọ Pingmart wọn pẹlu rẹ —\n` +
@@ -555,8 +581,12 @@ const SHOP_OR_SELL_STRINGS: Record<Language, {
   },
   ha: {
     question:     `Menene kake son yi yau?`,
-    sellLabel:    `🏪 Ina son siyarwa`,
+    sellLabel:    `🏪 Ina son buɗe shago`,
+    sellDesc:     `Sayar da kayayyaki akan WhatsApp`,
+    supportLabel: `🛠️ Don kasuwancina`,
+    supportDesc:  `Sarrafa alƙawari da tambayoyin abokan ciniki`,
     shopLabel:    `🛍️ Ina son siya`,
+    shopDesc:     `Siya daga kantin mai siyarwa`,
     shopRedirect:
       `Don siya, kuna buƙatar hanyar shiga kantin daga mai siyarwa.\n\n` +
       `Buƙaci mai siyarwa ya raba hanyar Pingmart tare da ku —\n` +
@@ -566,20 +596,27 @@ const SHOP_OR_SELL_STRINGS: Record<Language, {
 };
 
 /**
- * Shows the Pingmart "shop or sell?" landing screen.
- * No welcome message here — that was already shown on the language selection screen.
- * Sent as Reply Buttons. Sets Redis state so the next message routes correctly.
+ * Shows the Pingmart intent selection screen (3 options: product store, support
+ * channel, shop). Sent as a List Message so labels and descriptions both show.
+ * No welcome message — that appeared on the language selection screen.
  */
 async function showShopOrSellScreen(phone: string, lang: Language = 'en'): Promise<void> {
-  const t = SHOP_OR_SELL_STRINGS[lang];
+  const s = INTENT_STRINGS[lang];
   await redis.setex(`router:state:${phone}`, ROUTER_STATE_TTL_SECS, 'SHOP_OR_SELL');
   await messageQueue.add({
     to: phone,
-    message: t.question,
-    buttons: [
-      { id: 'SELL_ON_PINGMART', title: t.sellLabel },
-      { id: 'SHOP_FROM_STORE',  title: t.shopLabel  },
+    message: s.question,
+    listSections: [
+      {
+        title: 'Choose an option',
+        rows: [
+          { id: 'SELL_ON_PINGMART',      title: s.sellLabel,    description: s.sellDesc    },
+          { id: 'SETUP_SUPPORT_CHANNEL', title: s.supportLabel, description: s.supportDesc },
+          { id: 'SHOP_FROM_STORE',       title: s.shopLabel,    description: s.shopDesc    },
+        ],
+      },
     ],
+    listButtonText: 'Get started',
   });
 }
 

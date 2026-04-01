@@ -129,7 +129,7 @@ const ONBOARDING_LANG_CONFIRM: Record<Language, string> = {
  * Called when an unknown sender replies "2" to the shop/sell screen.
  * Creates the Vendor + VendorSetupSession records and sends the welcome message.
  */
-export async function startVendorOnboarding(phone: string): Promise<void> {
+export async function startVendorOnboarding(phone: string, supportMode = false): Promise<void> {
   // Idempotent: if already in onboarding, just show the current state
   let vendor = await prisma.vendor.findUnique({ where: { ownerPhone: phone } });
 
@@ -177,47 +177,76 @@ export async function startVendorOnboarding(phone: string): Promise<void> {
     return;
   }
 
-  await messageQueue.add({
-    to: phone,
-    message:
-      `🎉 Welcome to *Pingmart for Vendors*!\n\n` +
-      `I'm going to help you set up your WhatsApp store in just a few minutes.\n` +
-      `No technical knowledge needed — just answer my questions and you'll be live before you know it.\n\n` +
-      `Ready? Tell me a bit about your business — what do you sell and what's your business called? 😊`,
-  });
-
-  // Send business category selector immediately so vendor can tap their type
-  // without waiting for the LLM to ask. They can also just type their response.
-  await messageQueue.add({
-    to: phone,
-    message: `Or pick your business category to get started faster:`,
-    listSections: [
-      {
-        title: '🏷️ Product Businesses',
-        rows: [
-          { id: 'CATEGORY:food',    title: '🍔 Food & Drinks',      description: 'Restaurants, cloud kitchens, snacks, beverages' },
-          { id: 'CATEGORY:fashion', title: '👗 Fashion & Clothing',  description: 'Clothing, shoes, bags, accessories' },
-          { id: 'CATEGORY:beauty',  title: '💄 Beauty & Cosmetics',  description: 'Skincare, haircare, makeup, wellness' },
-          { id: 'CATEGORY:digital', title: '💻 Digital Products',    description: 'Ebooks, courses, software, templates' },
-          { id: 'CATEGORY:general', title: '🛒 General / Other',     description: 'Groceries, electronics, and everything else' },
-        ],
-      },
-      {
-        title: '🛠️ Service Businesses',
-        rows: [
-          { id: 'CATEGORY:laundry',    title: '👔 Laundry',              description: 'Washing, ironing, dry cleaning, pickup & delivery' },
-          { id: 'CATEGORY:salon',      title: '💇 Salon & Spa',          description: 'Hair, nails, makeup, massage, spa treatments' },
-          { id: 'CATEGORY:cleaning',   title: '🧹 Cleaning',             description: 'Home, office, and deep cleaning services' },
-          { id: 'CATEGORY:repair',     title: '🔧 Repairs',              description: 'Appliances, electronics, plumbing, electrical' },
-          { id: 'CATEGORY:tailoring',  title: '🧵 Tailoring',            description: 'Custom sewing, alterations, embroidery' },
-          { id: 'CATEGORY:logistics',  title: '🚚 Logistics',            description: 'Courier, dispatch, moving, delivery' },
-          { id: 'CATEGORY:consulting', title: '💼 Consulting',           description: 'Business advice, training, coaching' },
-          { id: 'CATEGORY:events',     title: '🎉 Events',               description: 'Catering, photography, venue, decoration' },
-        ],
-      },
-    ],
-    listButtonText: 'Choose Category',
-  });
+  if (supportMode) {
+    await messageQueue.add({
+      to: phone,
+      message:
+        `🎉 Welcome to *Pingmart for Service Businesses*!\n\n` +
+        `I'll help you set up a WhatsApp support channel so customers can book appointments, ask questions, and reach your team — all without leaving WhatsApp.\n\n` +
+        `No technical knowledge needed. Let's start — what's your business called? 😊`,
+    });
+    // Support mode: only show service categories
+    await messageQueue.add({
+      to: phone,
+      message: `Or pick your service type to get started faster:`,
+      listSections: [
+        {
+          title: '🛠️ Service Businesses',
+          rows: [
+            { id: 'CATEGORY:laundry',    title: '👔 Laundry',     description: 'Washing, ironing, dry cleaning, pickup & delivery' },
+            { id: 'CATEGORY:salon',      title: '💇 Salon & Spa', description: 'Hair, nails, makeup, massage, spa treatments' },
+            { id: 'CATEGORY:cleaning',   title: '🧹 Cleaning',    description: 'Home, office, and deep cleaning services' },
+            { id: 'CATEGORY:repair',     title: '🔧 Repairs',     description: 'Appliances, electronics, plumbing, electrical' },
+            { id: 'CATEGORY:tailoring',  title: '🧵 Tailoring',   description: 'Custom sewing, alterations, embroidery' },
+            { id: 'CATEGORY:logistics',  title: '🚚 Logistics',   description: 'Courier, dispatch, moving, delivery' },
+            { id: 'CATEGORY:consulting', title: '💼 Consulting',  description: 'Business advice, training, coaching' },
+            { id: 'CATEGORY:events',     title: '🎉 Events',      description: 'Catering, photography, venue, decoration' },
+          ],
+        },
+      ],
+      listButtonText: 'Choose Service Type',
+    });
+  } else {
+    await messageQueue.add({
+      to: phone,
+      message:
+        `🎉 Welcome to *Pingmart for Vendors*!\n\n` +
+        `I'm going to help you set up your WhatsApp store in just a few minutes.\n` +
+        `No technical knowledge needed — just answer my questions and you'll be live before you know it.\n\n` +
+        `Ready? Tell me a bit about your business — what do you sell and what's your business called? 😊`,
+    });
+    // Product mode: show both product and service categories
+    await messageQueue.add({
+      to: phone,
+      message: `Or pick your business category to get started faster:`,
+      listSections: [
+        {
+          title: '🏷️ Product Businesses',
+          rows: [
+            { id: 'CATEGORY:food',    title: '🍔 Food & Drinks',     description: 'Restaurants, cloud kitchens, snacks, beverages' },
+            { id: 'CATEGORY:fashion', title: '👗 Fashion & Clothing', description: 'Clothing, shoes, bags, accessories' },
+            { id: 'CATEGORY:beauty',  title: '💄 Beauty & Cosmetics', description: 'Skincare, haircare, makeup, wellness' },
+            { id: 'CATEGORY:digital', title: '💻 Digital Products',   description: 'Ebooks, courses, software, templates' },
+            { id: 'CATEGORY:general', title: '🛒 General / Other',    description: 'Groceries, electronics, and everything else' },
+          ],
+        },
+        {
+          title: '🛠️ Service Businesses',
+          rows: [
+            { id: 'CATEGORY:laundry',    title: '👔 Laundry',     description: 'Washing, ironing, dry cleaning, pickup & delivery' },
+            { id: 'CATEGORY:salon',      title: '💇 Salon & Spa', description: 'Hair, nails, makeup, massage, spa treatments' },
+            { id: 'CATEGORY:cleaning',   title: '🧹 Cleaning',    description: 'Home, office, and deep cleaning services' },
+            { id: 'CATEGORY:repair',     title: '🔧 Repairs',     description: 'Appliances, electronics, plumbing, electrical' },
+            { id: 'CATEGORY:tailoring',  title: '🧵 Tailoring',   description: 'Custom sewing, alterations, embroidery' },
+            { id: 'CATEGORY:logistics',  title: '🚚 Logistics',   description: 'Courier, dispatch, moving, delivery' },
+            { id: 'CATEGORY:consulting', title: '💼 Consulting',  description: 'Business advice, training, coaching' },
+            { id: 'CATEGORY:events',     title: '🎉 Events',      description: 'Catering, photography, venue, decoration' },
+          ],
+        },
+      ],
+      listButtonText: 'Choose Category',
+    });
+  }
 }
 
 /**
