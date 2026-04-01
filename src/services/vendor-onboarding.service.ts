@@ -20,7 +20,7 @@ import fetch from 'node-fetch';
 import { Vendor, VendorSetupSession, Prisma } from '@prisma/client';
 import { prisma } from '../repositories/prisma';
 import { messageQueue } from '../queues/message.queue';
-import { InteractiveButton } from '../types';
+import { InteractiveButton, InteractiveListSection } from '../types';
 import { encryptBankAccount } from '../utils/crypto';
 import { uploadProductImageBuffer } from '../utils/cloudinary';
 import { logger, maskPhone } from '../utils/logger';
@@ -28,6 +28,13 @@ import { env } from '../config/env';
 import { detectLanguageSwitchRequest } from './llm.service';
 import { redis } from '../utils/redis';
 import { Language } from '../i18n';
+import {
+  startSupportServicesStep,
+  handleSupportAddingServices,
+  handleSupportAddingFaqs,
+  handleSupportConfirmation,
+  showSupportConfirmation,
+} from './support-onboarding.service';
 
 type PrismaJson = Prisma.InputJsonValue;
 
@@ -82,6 +89,13 @@ interface CollectedData {
 
   // Full LLM conversation history (last 20 exchanges max)
   history: LLMMessage[];
+
+  // Support Mode fields (set when a service category is chosen)
+  vendorMode?: 'support';
+  serviceLocationType?: 'fixed' | 'pickup' | 'both';
+  services?: Array<{ name: string; price: number; unit: string; turnaroundHours?: number; description?: string }>;
+  pendingServices?: Array<{ name: string; price: number; unit: string; turnaroundHours?: number; description?: string }>;
+  faqs?: Array<{ question: string; answer: string }>;
 }
 
 // ─── Required info fields — all must be present before advancing ──────────────
@@ -179,13 +193,26 @@ export async function startVendorOnboarding(phone: string): Promise<void> {
     message: `Or pick your business category to get started faster:`,
     listSections: [
       {
-        title: '🏷️ Business Categories',
+        title: '🏷️ Product Businesses',
         rows: [
-          { id: 'CATEGORY:food',    title: '🍔 Food & Drinks',       description: 'Restaurants, cloud kitchens, snacks, beverages' },
+          { id: 'CATEGORY:food',    title: '🍔 Food & Drinks',      description: 'Restaurants, cloud kitchens, snacks, beverages' },
           { id: 'CATEGORY:fashion', title: '👗 Fashion & Clothing',  description: 'Clothing, shoes, bags, accessories' },
           { id: 'CATEGORY:beauty',  title: '💄 Beauty & Cosmetics',  description: 'Skincare, haircare, makeup, wellness' },
           { id: 'CATEGORY:digital', title: '💻 Digital Products',    description: 'Ebooks, courses, software, templates' },
-          { id: 'CATEGORY:general', title: '🛒 General / Other',     description: 'Everything else — groceries, electronics, services' },
+          { id: 'CATEGORY:general', title: '🛒 General / Other',     description: 'Groceries, electronics, and everything else' },
+        ],
+      },
+      {
+        title: '🛠️ Service Businesses',
+        rows: [
+          { id: 'CATEGORY:laundry',    title: '👔 Laundry',              description: 'Washing, ironing, dry cleaning, pickup & delivery' },
+          { id: 'CATEGORY:salon',      title: '💇 Salon & Spa',          description: 'Hair, nails, makeup, massage, spa treatments' },
+          { id: 'CATEGORY:cleaning',   title: '🧹 Cleaning',             description: 'Home, office, and deep cleaning services' },
+          { id: 'CATEGORY:repair',     title: '🔧 Repairs',              description: 'Appliances, electronics, plumbing, electrical' },
+          { id: 'CATEGORY:tailoring',  title: '🧵 Tailoring',            description: 'Custom sewing, alterations, embroidery' },
+          { id: 'CATEGORY:logistics',  title: '🚚 Logistics',            description: 'Courier, dispatch, moving, delivery' },
+          { id: 'CATEGORY:consulting', title: '💼 Consulting',           description: 'Business advice, training, coaching' },
+          { id: 'CATEGORY:events',     title: '🎉 Events',               description: 'Catering, photography, venue, decoration' },
         ],
       },
     ],
@@ -221,25 +248,40 @@ export async function handleVendorOnboarding(
   // the message arrives as "CATEGORY:food" etc. Handle it directly without the LLM.
   if (message.startsWith('CATEGORY:')) {
     const categoryKey = message.slice(9).toLowerCase().trim();
+    const SERVICE_CATEGORIES = new Set(['laundry', 'salon', 'cleaning', 'repair', 'tailoring', 'logistics', 'consulting', 'events']);
     const VALID_CATEGORIES: Record<string, string> = {
       food: 'food', fashion: 'fashion', beauty: 'beauty', digital: 'digital', general: 'general',
+      laundry: 'laundry', salon: 'salon', cleaning: 'cleaning', repair: 'repair',
+      tailoring: 'tailoring', logistics: 'logistics', consulting: 'consulting', events: 'events',
+    };
+    const CATEGORY_LABELS: Record<string, string> = {
+      food: '🍔 Food & Drinks', fashion: '👗 Fashion & Clothing',
+      beauty: '💄 Beauty & Cosmetics', digital: '💻 Digital Products', general: '🛒 General / Other',
+      laundry: '👔 Laundry', salon: '💇 Salon & Spa', cleaning: '🧹 Cleaning Services',
+      repair: '🔧 Repairs & Maintenance', tailoring: '🧵 Tailoring', logistics: '🚚 Logistics',
+      consulting: '💼 Consulting', events: '🎉 Events',
     };
     const resolved = VALID_CATEGORIES[categoryKey];
     if (resolved) {
-      const CATEGORY_LABELS: Record<string, string> = {
-        food: '🍔 Food & Drinks', fashion: '👗 Fashion & Clothing',
-        beauty: '💄 Beauty & Cosmetics', digital: '💻 Digital Products', general: '🛒 General / Other',
+      const isService = SERVICE_CATEGORIES.has(resolved);
+      const newData: CollectedData = {
+        ...data,
+        businessType: resolved,
+        ...(isService ? { vendorMode: 'support' } : {}),
       };
-      const newData: CollectedData = { ...data, businessType: resolved };
       await prisma.vendorSetupSession.update({
         where: { id: session.id },
         data: { collectedData: newData as unknown as Prisma.InputJsonValue },
       });
+      if (isService) {
+        // Set vendor mode immediately so routing is correct even if session is lost
+        await prisma.vendor.update({ where: { id: vendor.id }, data: { mode: 'SUPPORT' } });
+      }
       await messageQueue.add({
         to: phone,
         message:
           `✅ *${CATEGORY_LABELS[resolved]}* — great choice!\n\n` +
-          `Now, what's your business called and what do you sell? Give me a short description. 😊`,
+          `Now, what's your business called and what do you offer? Give me a short description. 😊`,
       });
       return;
     }
@@ -257,6 +299,15 @@ export async function handleVendorOnboarding(
       break;
     case 'CONFIRMATION':
       await handleConfirmation(phone, message, vendor, session, data);
+      break;
+    case 'SUPPORT_ADDING_SERVICES':
+      await handleSupportAddingServices(phone, message, vendor, session, data as unknown as import('./support-onboarding.service').SupportCollectedData);
+      break;
+    case 'SUPPORT_ADDING_FAQS':
+      await handleSupportAddingFaqs(phone, message, vendor, session, data as unknown as import('./support-onboarding.service').SupportCollectedData);
+      break;
+    case 'SUPPORT_CONFIRMATION':
+      await handleSupportConfirmation(phone, message, vendor, session, data as unknown as import('./support-onboarding.service').SupportCollectedData);
       break;
     default:
       // Shouldn't happen — re-show welcome to unstick
@@ -379,28 +430,50 @@ async function handleCollectingInfo(
     // Persist collected info onto the Vendor record
     await applyCollectedInfoToVendor(vendor.id, newData);
 
-    // Advance to ADDING_PRODUCTS
+    const SERVICE_CATS = new Set(['laundry', 'salon', 'cleaning', 'repair', 'tailoring', 'logistics', 'consulting', 'events']);
+    const isService = SERVICE_CATS.has(newData.businessType ?? '');
+
+    if (isService) {
+      // Set vendor mode to SUPPORT in DB, store vendorMode flag in session
+      await prisma.vendor.update({ where: { id: vendor.id }, data: { mode: 'SUPPORT' } });
+    }
+
+    // All vendors (product and service) advance to ADDING_PRODUCTS
+    const transitionData: CollectedData = {
+      ...newData,
+      history: [],
+      ...(isService ? { vendorMode: 'support' } : {}),
+    };
     await prisma.vendorSetupSession.update({
       where: { id: session.id },
       data: {
         step: 'ADDING_PRODUCTS',
-        collectedData: { ...newData, history: [] } as unknown as PrismaJson,
+        collectedData: transitionData as unknown as PrismaJson,
       },
     });
 
-    const catWord  = catalogueWord(newData.businessType);
-    const catEmoji = productSectionEmoji(newData.businessType);
+    const catWord  = catalogueWord(transitionData.businessType);
+    const catEmoji = productSectionEmoji(transitionData.businessType);
+    const typeLabel = isService ? '✍️ Type my services' : '✍️ Type my products';
+
     await messageQueue.add({
       to: phone,
       message:
         `${visibleResponse}\n\n` +
         `${catEmoji} *Now let's build your ${catWord}!*\n\n` +
-        `How would you like to add your products?`,
-      buttons: [
-        { id: 'ADD_PRODUCTS_TEXT',   title: '✍️ Type my products' },
-        { id: 'ADD_PRODUCTS_SHEET',  title: '📊 Google Sheet'     },
-        { id: 'ADD_PRODUCTS_PHOTOS', title: '📸 Send photos'      },
-      ] as InteractiveButton[],
+        `How would you like to add your products/services?`,
+      listSections: [
+        {
+          title: 'Choose a method',
+          rows: [
+            { id: 'ADD_PRODUCTS_TEXT',     title: typeLabel },
+            { id: 'ADD_PRODUCTS_SHEET',    title: '📊 Google Sheet' },
+            { id: 'ADD_PRODUCTS_PHOTOS',   title: '📸 Send photos' },
+            { id: 'ADD_PRODUCTS_SERVICES', title: '🛠️ List my services' },
+          ],
+        },
+      ] as InteractiveListSection[],
+      listButtonText: 'Choose method',
     });
   } else {
     // Continue collecting
@@ -541,6 +614,16 @@ async function handleAddingProducts(
 
   // ── 3. Input-mode selection buttons ───────────────────────────────────────
   if (upper === 'ADD_PRODUCTS_TEXT') {
+    if (data.vendorMode === 'support') {
+      // Service vendor chose "Type my services" → hand off to support services flow
+      const newData: CollectedData = { ...data };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data: { step: 'SUPPORT_ADDING_SERVICES', collectedData: newData as unknown as PrismaJson },
+      });
+      await startSupportServicesStep(phone, newData as unknown as import('./support-onboarding.service').SupportCollectedData);
+      return;
+    }
     const newData: CollectedData = { ...data, productInputMode: 'text' };
     await prisma.vendorSetupSession.update({
       where: { id: session.id },
@@ -592,6 +675,19 @@ async function handleAddingProducts(
         `I'll read the details and ask you to confirm before saving. ` +
         `Type *DONE* when you've sent everything 😊`,
     });
+    return;
+  }
+
+  if (upper === 'ADD_PRODUCTS_SERVICES') {
+    // Vendor chose "List my services" → advance to guided support services flow
+    const newData: CollectedData = { ...data, vendorMode: 'support' };
+    await prisma.vendorSetupSession.update({
+      where: { id: session.id },
+      data: { step: 'SUPPORT_ADDING_SERVICES', collectedData: newData as unknown as PrismaJson },
+    });
+    // Also mark vendor mode in DB if not already set
+    await prisma.vendor.update({ where: { id: vendor.id }, data: { mode: 'SUPPORT' } });
+    await startSupportServicesStep(phone, newData as unknown as import('./support-onboarding.service').SupportCollectedData);
     return;
   }
 
@@ -1179,11 +1275,16 @@ async function handlePaymentSetup(
       }
 
       // paystack-only — advance to confirmation
+      const paystackNextStep = (newData.vendorMode === 'support') ? 'SUPPORT_CONFIRMATION' : 'CONFIRMATION';
       await prisma.vendorSetupSession.update({
         where: { id: session.id },
-        data: { step: 'CONFIRMATION', collectedData: newData as unknown as PrismaJson },
+        data: { step: paystackNextStep, collectedData: newData as unknown as PrismaJson },
       });
-      await showConfirmation(phone, vendor.id, newData);
+      if (newData.vendorMode === 'support') {
+        await showSupportConfirmation(phone, vendor, newData as unknown as import('./support-onboarding.service').SupportCollectedData);
+      } else {
+        await showConfirmation(phone, vendor.id, newData);
+      }
       return;
     }
   }
@@ -1228,9 +1329,10 @@ async function handlePaymentSetup(
 
   // Confirm before saving
   const newData = { ...data, bankName, bankAccountNumber: accountNumber, bankAccountName: accountName };
+  const bankNextStep = (newData.vendorMode === 'support') ? 'SUPPORT_CONFIRMATION' : 'CONFIRMATION';
   await prisma.vendorSetupSession.update({
     where: { id: session.id },
-    data: { step: 'CONFIRMATION', collectedData: newData as unknown as PrismaJson },
+    data: { step: bankNextStep, collectedData: newData as unknown as PrismaJson },
   });
 
   await messageQueue.add({
@@ -1456,7 +1558,7 @@ Collect the following information through natural conversation. Extract what you
 Required information:
 1. businessName — the name of their store
 2. storeCode — a short unique code (4-10 alphanumeric chars, no spaces) for their store link
-3. businessType — one of: food, fashion, beauty, digital, general
+3. businessType — one of: food, fashion, beauty, digital, general, laundry, salon, cleaning, repair, tailoring, logistics, consulting, events
 4. description — 1-2 sentence description of their business (for customer welcome screen)
 5. workingHours — when they're open (start time, end time, which days)
 6. paymentMethod — paystack, bank, or both
@@ -1593,6 +1695,8 @@ function parseDays(workingDays?: string): string {
 function businessTypeEmoji(type?: string): string {
   const map: Record<string, string> = {
     food: '🍽️', fashion: '👗', beauty: '💄', digital: '💻', general: '🏪',
+    laundry: '👔', salon: '💇', cleaning: '🧹', repair: '🔧',
+    tailoring: '🧵', logistics: '🚚', consulting: '💼', events: '🎉',
   };
   return map[type ?? 'general'] ?? '🏪';
 }
@@ -1678,11 +1782,19 @@ function catalogueWord(businessType?: string): string {
  */
 function exampleProductLine(businessType?: string): string {
   switch (businessType) {
-    case 'food':    return '_Chicken Shawarma | 2,500 | Shawarma | Crispy grilled chicken wrap_';
-    case 'fashion': return '_Ankara Midi Dress | 18,000 | Dresses | Vibrant handmade fabric_';
-    case 'beauty':  return '_CeraVe Foaming Cleanser | 21,500 | Skincare | Gentle daily face wash_';
-    case 'digital': return '_Instagram Growth Masterclass | 12,000 | Digital Course_';
-    default:        return '_Wireless Earbuds | 35,000 | Electronics_';
+    case 'food':       return '_Chicken Shawarma | 2,500 | Shawarma | Crispy grilled chicken wrap_';
+    case 'fashion':    return '_Ankara Midi Dress | 18,000 | Dresses | Vibrant handmade fabric_';
+    case 'beauty':     return '_CeraVe Foaming Cleanser | 21,500 | Skincare | Gentle daily face wash_';
+    case 'digital':    return '_Instagram Growth Masterclass | 12,000 | Digital Course_';
+    case 'laundry':    return '_Regular wash | 500 per kg_';
+    case 'salon':      return '_Haircut & Styling | 3,500_';
+    case 'cleaning':   return '_Home deep clean | 15,000_';
+    case 'repair':     return '_Phone screen repair | 8,000_';
+    case 'tailoring':  return '_Custom shirt | 7,500_';
+    case 'logistics':  return '_Same-day delivery | 2,000_';
+    case 'consulting': return '_Strategy session | 25,000 per hour_';
+    case 'events':     return '_Event coordination | 50,000_';
+    default:           return '_Wireless Earbuds | 35,000 | Electronics_';
   }
 }
 
