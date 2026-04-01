@@ -250,19 +250,17 @@ async function handleShopOrSellReply(phone: string, message: string): Promise<vo
   const choice = message.trim().toUpperCase();
   await redis.del(`router:state:${phone}`);
 
+  // Resolve the customer's saved language for translated responses
+  const customer = await customerRepository.findByWhatsAppNumber(phone);
+  const lang: Language = (customer?.language as Language | undefined) ?? 'en';
+  const t = SHOP_OR_SELL_STRINGS[lang];
+
   // Accept both button IDs (primary) and legacy numeric replies (fallback)
   const isSell = choice === 'SELL_ON_PINGMART' || choice === '2';
   const isShop = choice === 'SHOP_FROM_STORE'  || choice === '1';
 
   if (isShop) {
-    await messageQueue.add({
-      to: phone,
-      message:
-        `To shop, you need a store link from a vendor.\n\n` +
-        `Ask the vendor to share their Pingmart link with you —\n` +
-        `it looks like this: *wa.me/234XXXXXXX?text=STORECODE*\n\n` +
-        `Once you tap their link, you'll land directly in their store. 🛍️`,
-    });
+    await messageQueue.add({ to: phone, message: t.shopRedirect });
     return;
   }
 
@@ -271,12 +269,12 @@ async function handleShopOrSellReply(phone: string, message: string): Promise<vo
     return;
   }
 
-  // Unrecognised reply — log and show the screen again
+  // Unrecognised reply — log and show the screen again with correct language
   logger.warn('Router: unrecognised SHOP_OR_SELL reply', {
     from: maskPhone(phone),
     raw: JSON.stringify(message),
   });
-  await showShopOrSellScreen(phone);
+  await showShopOrSellScreen(phone, lang);
 }
 
 /**
@@ -502,26 +500,85 @@ async function handleLangInitReply(phone: string, message: string): Promise<void
   await customerRepository.findOrCreate(phone);
   await customerRepository.updateLanguage(phone, lang);
 
-  // Clear LANG_INIT state and proceed to shop/sell
+  // Clear LANG_INIT state and proceed to shop/sell — pass language so screen translates
   await redis.del(`router:state:${phone}`);
-  await showShopOrSellScreen(phone);
+  await showShopOrSellScreen(phone, lang);
 }
 
+// ─── Shop-or-Sell translations ───────────────────────────────────────────────
+
+const SHOP_OR_SELL_STRINGS: Record<Language, {
+  question:     string;
+  sellLabel:    string;
+  shopLabel:    string;
+  shopRedirect: string;
+}> = {
+  en: {
+    question:     `What would you like to do today?`,
+    sellLabel:    `🏪 Sell on Pingmart`,
+    shopLabel:    `🛍️ Shop from a store`,
+    shopRedirect:
+      `To shop, you need a store link from a vendor.\n\n` +
+      `Ask the vendor to share their Pingmart link with you —\n` +
+      `it looks like this: *wa.me/234XXXXXXX?text=STORECODE*\n\n` +
+      `Once you tap their link, you'll land directly in their store. 🛍️`,
+  },
+  pid: {
+    question:     `Wetin you wan do for Pingmart today?`,
+    sellLabel:    `🏪 I wan sell for Pingmart`,
+    shopLabel:    `🛍️ I wan buy something`,
+    shopRedirect:
+      `To shop, you need store link from vendor.\n\n` +
+      `Ask the vendor make dem share their Pingmart link with you —\n` +
+      `e go look like this: *wa.me/234XXXXXXX?text=STORECODE*\n\n` +
+      `Once you tap their link, you go enter their store straight. 🛍️`,
+  },
+  ig: {
+    question:     `Gịnị ka ị chọrọ ime taa?`,
+    sellLabel:    `🏪 Achọrọ m ire ihe`,
+    shopLabel:    `🛍️ Achọrọ m ịzụ ihe`,
+    shopRedirect:
+      `Iji zụta ihe, ị chọrọ njikọ ụlọ ahịa sitere n'aka onye na-ere ahịa.\n\n` +
+      `Jụọ onye na-ere ahịa ka ha kesaa njikọ Pingmart ha —\n` +
+      `ọ dị ka nke a: *wa.me/234XXXXXXX?text=STORECODE*\n\n` +
+      `Ozugbo ị pịa njikọ ha, ị ga-abata n'ụlọ ahịa ha ozugbo. 🛍️`,
+  },
+  yo: {
+    question:     `Kini o fẹ ṣe loni?`,
+    sellLabel:    `🏪 Mo fẹ ta nkan`,
+    shopLabel:    `🛍️ Mo fẹ ra nkan`,
+    shopRedirect:
+      `Lati ra nkan, o nilo ọna asopọ itaja lati ọdọ olutaja.\n\n` +
+      `Bi olutaja lati pin ọna asopọ Pingmart wọn pẹlu rẹ —\n` +
+      `o dabi eyi: *wa.me/234XXXXXXX?text=STORECODE*\n\n` +
+      `Ni kete ti o tẹ ọna asopọ wọn, iwọ yoo wọ inu itaja wọn taara. 🛍️`,
+  },
+  ha: {
+    question:     `Menene kake son yi yau?`,
+    sellLabel:    `🏪 Ina son siyarwa`,
+    shopLabel:    `🛍️ Ina son siya`,
+    shopRedirect:
+      `Don siya, kuna buƙatar hanyar shiga kantin daga mai siyarwa.\n\n` +
+      `Buƙaci mai siyarwa ya raba hanyar Pingmart tare da ku —\n` +
+      `yana kama haka: *wa.me/234XXXXXXX?text=STORECODE*\n\n` +
+      `Da zarar kun danna hanyarsu, za ku shiga kantin su kai tsaye. 🛍️`,
+  },
+};
+
 /**
- * Shows the Pingmart "shop or sell?" landing screen to an unknown sender.
- * Sent as Reply Buttons so the customer taps instead of typing.
- * Sets Redis state so their next message is handled as a reply to this prompt.
+ * Shows the Pingmart "shop or sell?" landing screen.
+ * No welcome message here — that was already shown on the language selection screen.
+ * Sent as Reply Buttons. Sets Redis state so the next message routes correctly.
  */
-async function showShopOrSellScreen(phone: string): Promise<void> {
+async function showShopOrSellScreen(phone: string, lang: Language = 'en'): Promise<void> {
+  const t = SHOP_OR_SELL_STRINGS[lang];
   await redis.setex(`router:state:${phone}`, ROUTER_STATE_TTL_SECS, 'SHOP_OR_SELL');
   await messageQueue.add({
     to: phone,
-    message:
-      `👋 Welcome to *Pingmart*!\n\n` +
-      `What would you like to do today?`,
+    message: t.question,
     buttons: [
-      { id: 'SELL_ON_PINGMART', title: '🏪 Sell on Pingmart' },
-      { id: 'SHOP_FROM_STORE',  title: '🛍️ Shop from a store' },
+      { id: 'SELL_ON_PINGMART', title: t.sellLabel },
+      { id: 'SHOP_FROM_STORE',  title: t.shopLabel  },
     ],
   });
 }
