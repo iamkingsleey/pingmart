@@ -25,7 +25,7 @@ import { InteractiveButton, InteractiveListSection } from '../types';
 import { encryptBankAccount } from '../utils/crypto';
 import { uploadProductImageBuffer } from '../utils/cloudinary';
 import { logger, maskPhone } from '../utils/logger';
-import { normalisePhone } from '../utils/formatters';
+import { normalisePhone, productNameEmoji } from '../utils/formatters';
 import { env } from '../config/env';
 import { PLAN_NOTIFICATION_LIMITS, PLAN_UPGRADE_PRICING, OFFSCRIPT_CONFIDENCE_THRESHOLD } from '../config/constants';
 import {
@@ -1269,11 +1269,11 @@ async function showSheetImportPreview(
 ): Promise<void> {
   const total   = products.length;
   const preview = products.slice(0, 5);
-  const icon    = productItemEmoji(businessType);
+  const headerIcon = sectionEmoji(businessType);
 
   const previewLines = preview.map((p, i) => {
     const parts = [
-      `${i + 1}. *${p.name}* — ₦${p.price.toLocaleString()}`,
+      `${i + 1}. ${productNameEmoji(p.name, p.category)} *${p.name}* — ₦${p.price.toLocaleString()}`,
       ...(p.category ? [`   📂 ${p.category}`] : []),
     ];
     return parts.join('\n');
@@ -1282,7 +1282,7 @@ async function showSheetImportPreview(
   const ellipsis = total > 5 ? `\n_...and ${total - 5} more_` : '';
 
   const body =
-    `${icon} Found *${total} product${total !== 1 ? 's' : ''}* in your sheet. Here's a preview:\n\n` +
+    `${headerIcon} Found *${total} product${total !== 1 ? 's' : ''}* in your sheet. Here's a preview:\n\n` +
     previewLines.join('\n') +
     ellipsis +
     `\n\nShall I import all *${total}*?`;
@@ -2595,11 +2595,12 @@ function productSectionEmoji(businessType?: string): string {
 }
 
 /**
- * Returns a per-product emoji shown in the confirmation preview.
+ * Returns a section-level emoji for the import preview header.
+ * Uses businessType only (no product name available at that point).
  */
-function productItemEmoji(businessType?: string): string {
+function sectionEmoji(businessType?: string): string {
   const map: Record<string, string> = {
-    food: '🍔', fashion: '👗', beauty: '💄', digital: '📚',
+    food: '🍔', fashion: '👕', beauty: '💄', digital: '📚',
   };
   return map[businessType ?? ''] ?? '📦';
 }
@@ -2615,13 +2616,11 @@ function productItemEmoji(businessType?: string): string {
 async function showPendingConfirmation(
   phone: string,
   products: ProductInput[],
-  businessType?: string,
+  _businessType?: string,
 ): Promise<void> {
-  const icon = productItemEmoji(businessType);
-
   const lines = products.map((p) =>
     [
-      `${icon} *${p.name}*`,
+      `${productNameEmoji(p.name, p.category)} *${p.name}*`,
       `💰 ₦${p.price.toLocaleString()}`,
       ...(p.category    ? [`📂 ${p.category}`]                             : []),
       ...(p.description ? [`📝 ${p.description}`]                          : []),

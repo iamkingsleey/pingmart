@@ -74,3 +74,59 @@ export function normalisePhone(phone: string): string {
 export function productTypeLabel(type: ProductType): string {
   return type === ProductType.DIGITAL ? '📲 [DIGITAL]' : '📦 [PHYSICAL]';
 }
+
+/**
+ * Returns a context-aware emoji for a product based on keyword matching
+ * against its name and category. Case-insensitive. No LLM needed.
+ *
+ * Shared utility — use everywhere products are displayed:
+ * vendor preview, order confirmation, catalogue listing, vendor dashboard.
+ */
+export function productNameEmoji(name: string, category = ''): string {
+  const text = `${name} ${category}`.toLowerCase();
+
+  // ── Gender detection ───────────────────────────────────────────────────────
+  const isMale   = /\b(men|male|senator|agbada|kaftan|polo)\b/.test(text);
+  const isFemale = /\b(women|female|ladies|girl)\b/.test(text);
+
+  // ── Shoes ──────────────────────────────────────────────────────────────────
+  if (/\b(sneaker|trainer|canvas)\b/.test(text))                    return '👟';
+  if (/\b(heel|pump|stiletto|wedge)\b/.test(text))                  return '👠';
+  if (/\b(sandal|slipper)\b/.test(text))                            return isMale ? '👞' : '👠';
+  if (/\b(shoe|boot|loafer|oxford|moccasin)\b/.test(text))         return isFemale ? '👠' : '👞';
+
+  // ── Clothing — gender-aware ───────────────────────────────────────────────
+  if (/\b(suit|blazer)\b/.test(text))                               return '🤵';
+  if (/\b(trouser|chino|jogger|short|pant)\b/.test(text))          return '👖';
+  if (/\b(skirt)\b/.test(text))                                     return '🩱';
+  if (/\b(blouse)\b/.test(text))                                    return '👚';
+  if (/\b(dress|gown|ankara)\b/.test(text))                        return isMale ? '👔' : '👗';
+  if (/\b(polo|shirt|top|senator|agbada|kaftan|buba|dashiki)\b/.test(text)) return isMale ? '👔' : '👚';
+  if (/\b(native|wear|fabric|cloth|fashion|apparel|two.?piece)\b/.test(text))
+    return isMale ? '👔' : isFemale ? '👗' : '👕';
+
+  // ── Accessories ───────────────────────────────────────────────────────────
+  if (/\b(bag|handbag|purse|tote|backpack|clutch)\b/.test(text))   return '👜';
+  if (/\b(watch|wristwatch)\b/.test(text))                         return '⌚';
+  if (/\b(cap|hat|beanie|beret|fez)\b/.test(text))                 return '🧢';
+
+  // ── Food & drinks ─────────────────────────────────────────────────────────
+  if (/\b(rice|jollof|meal|food|stew|soup|pasta)\b/.test(text))    return '🍛';
+  if (/\b(chicken|meat|fish|beef|protein|turkey|suya|kebab)\b/.test(text)) return '🍗';
+  if (/\b(drink|juice|water|soda|smoothie|beverage)\b/.test(text)) return '🥤';
+  if (/\b(cake|pastry|bread|biscuit|donut|cookie|snack|pie)\b/.test(text)) return '🎂';
+
+  // ── Beauty & skincare ─────────────────────────────────────────────────────
+  if (/\b(cream|lotion|moisturis|serum|sunscreen)\b/.test(text))   return '🧴';
+  if (/\b(perfume|fragrance|cologne|scent|spray)\b/.test(text))    return '🌸';
+  if (/\b(makeup|lipstick|foundation|blush|mascara|liner)\b/.test(text)) return '💄';
+  if (/\b(hair|wig|extension|braid|weave|lace|closure)\b/.test(text)) return '💇';
+
+  // ── Electronics ───────────────────────────────────────────────────────────
+  if (/\b(phone|charger|cable|sim|powerbank)\b/.test(text))        return '📱';
+  if (/\b(laptop|computer|pc|desktop|tablet|ipad)\b/.test(text))   return '💻';
+  if (/\b(earphone|headphone|airpod|earbud|speaker)\b/.test(text)) return '🎧';
+
+  // ── Fallback ──────────────────────────────────────────────────────────────
+  return '📦';
+}
