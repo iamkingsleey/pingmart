@@ -1,22 +1,4 @@
 (function () {
-  // ── Webhook URL (Google Apps Script web app /exec endpoint) ──────────────
-  // Must be deployed with "Execute as: Me" and "Who has access: Anyone".
-  // With mode:'no-cors' the response is always opaque — status unreadable.
-  // NOTE: 'Content-Type: text/plain' is required here. The browser enforces
-  // that only safelisted Content-Type values (text/plain, multipart/form-data,
-  // application/x-www-form-urlencoded) may be used in no-cors mode. Setting
-  // application/json would throw a TypeError before the request is sent.
-  // GAS reads the body via e.postData.contents regardless of Content-Type.
-  var WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwNS0zqEmwNeyyV3p6Ik6_ChRI-712MgXtTfir4FK8Z5WNMi8UvVydtUNz6twBob2YqhQ/exec';
-
-  // ── Diagnostic: confirm URL is set on page load ──────────────────────────
-  if (WEBHOOK_URL && WEBHOOK_URL.indexOf('script.google.com') !== -1) {
-    console.log('[Pingmart] Webhook URL configured: ' +
-      WEBHOOK_URL.slice(0, 48) + '...' + WEBHOOK_URL.slice(-8));
-  } else {
-    console.warn('[Pingmart] WARNING: WEBHOOK_URL is not set or invalid!');
-  }
-
   var form      = document.getElementById('signup-form');
   var btn       = document.getElementById('submit-btn');
   var errBanner = document.getElementById('error-banner');
@@ -107,7 +89,7 @@
     setTimeout(function () {
       formWrap.style.display = 'none';
       successEl.style.display = 'block';
-      // Double rAF ensures display change is painted before opacity transition
+      // Double rAF ensures display change is painted before opacity transition starts
       requestAnimationFrame(function () {
         requestAnimationFrame(function () {
           successEl.style.opacity = '1';
@@ -131,36 +113,32 @@
     setLoading(true);
 
     var fullPhone = dialCode + ' ' + phone.trim();
-    var payload   = JSON.stringify({
-      name:      name.trim(),
-      phone:     fullPhone,
-      email:     email.trim().toLowerCase(),
-      timestamp: new Date().toISOString(),
-    });
 
     console.log('[Pingmart] Submitting\u2026', {
-      name: name.trim(),
+      name:  name.trim(),
       phone: fullPhone,
       email: email.trim().toLowerCase(),
     });
 
-    // POST directly to Google Apps Script.
-    // mode:'no-cors' prevents CORS preflight; response will be opaque.
-    // A completed fetch (no exception) = success — GAS wrote to the sheet.
-    fetch(WEBHOOK_URL, {
+    // POST to the server's /submit endpoint (same-origin — no CSP connect-src issue).
+    // The server forwards the payload to Google Apps Script server-side.
+    fetch('/submit', {
       method:  'POST',
-      mode:    'no-cors',
-      headers: { 'Content-Type': 'text/plain' },
-      body:    payload,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name:      name.trim(),
+        phone:     fullPhone,
+        email:     email.trim().toLowerCase(),
+        timestamp: new Date().toISOString(),
+      }),
     })
       .then(function (res) {
-        console.log('[Pingmart] Fetch completed. Response type:', res.type);
-        // Opaque response (type === 'opaque') is expected with no-cors.
-        // Any completion without a network exception is treated as success.
+        console.log('[Pingmart] /submit responded:', res.status);
+        if (!res.ok) throw new Error('Server error ' + res.status);
         showSuccess();
       })
       .catch(function (err) {
-        console.error('[Pingmart] Fetch FAILED:', err.name, '-', err.message);
+        console.error('[Pingmart] Submission failed:', err.message);
         errBanner.innerHTML =
           'Something went wrong. Please email us directly at ' +
           '<a href="mailto:hello@pingmart.io">hello@pingmart.io</a>';
