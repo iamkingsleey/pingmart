@@ -1038,6 +1038,12 @@ export async function processIncomingMessage(
       result.messages = result.messages.map((m) => m.replace('{NOTE_HINT}', hint));
     }
 
+    // If a product image is attached to the result, send it BEFORE the text
+    // so the customer sees the photo first (product selection flow).
+    if (result.imageUrl) {
+      await enqueueImage(from, result.imageUrl, result.imageCaption);
+    }
+
     // Send each message; attach interactive buttons to the LAST message if provided
     for (let i = 0; i < result.messages.length; i++) {
       const isLast = i === result.messages.length - 1;
@@ -1633,6 +1639,15 @@ async function enqueue(to: string, message: string): Promise<void> {
   const vocab = vocabContext.getStore();
   const m = vocab ? applyVocabulary(message, vocab) : message;
   await messageQueue.add({ to, message: m }, QUEUE_OPTS);
+}
+
+/**
+ * Sends a product image to the customer as a WhatsApp image message.
+ * Called before the follow-up text/button message so the image leads the
+ * conversation — customer sees the photo, then the quantity prompt / detail text.
+ */
+async function enqueueImage(to: string, imageUrl: string, caption?: string): Promise<void> {
+  await messageQueue.add({ to, message: '', imageUrl, imageCaption: caption }, QUEUE_OPTS);
 }
 
 async function enqueueButtons(to: string, message: string, buttons: InteractiveButton[]): Promise<void> {

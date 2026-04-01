@@ -695,10 +695,13 @@ async function handleAddingProducts(
     return;
   }
 
+  // Enrich any book products with Open Library cover + metadata before confirming
+  const enrichedProducts = await enrichBooksWithMetadata(validProducts);
+
   // Store as pending and show confirmation before saving
   const newData: CollectedData = {
     ...data,
-    pendingProducts: validProducts,
+    pendingProducts: enrichedProducts,
     pendingIsDone:   isDone || undefined,
   };
   await prisma.vendorSetupSession.update({
@@ -768,7 +771,8 @@ async function handleSheetImport(
     return;
   }
 
-  const newData: CollectedData = { ...data, pendingProducts: products };
+  const enrichedProducts = await enrichBooksWithMetadata(products);
+  const newData: CollectedData = { ...data, pendingProducts: enrichedProducts };
   await prisma.vendorSetupSession.update({
     where: { id: session.id },
     data: { collectedData: newData as unknown as PrismaJson },
@@ -1363,6 +1367,7 @@ async function activateStore(
           price: Math.round(p.price * 100), // to kobo
           category: p.category ?? capitalise(data.businessType ?? 'General'),
           description: p.description ?? null,
+          imageUrl: p.imageUrl ?? null,
           sortOrder: i,
           isAvailable: true,
         })),
@@ -1592,6 +1597,67 @@ function businessTypeEmoji(type?: string): string {
   return map[type ?? 'general'] ?? '🏪';
 }
 
+// ─── Book Metadata Enrichment (Open Library) ─────────────────────────────────
+
+interface BookMetadata {
+  coverUrl?: string;
+  author?:   string;
+  isbn?:     string;
+}
+
+/**
+ * Queries the Open Library search API to fetch cover image, author, and ISBN
+ * for a given book title. Returns null if the title is not found or the API
+ * call fails — callers should handle this gracefully.
+ */
+async function fetchOpenLibraryData(title: string): Promise<BookMetadata | null> {
+  try {
+    const q   = encodeURIComponent(title);
+    const url = `https://openlibrary.org/search.json?title=${q}&limit=1&fields=author_name,isbn,cover_i`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json() as { docs?: Array<{ author_name?: string[]; isbn?: string[]; cover_i?: number }> };
+    const doc  = data.docs?.[0];
+    if (!doc) return null;
+    return {
+      coverUrl: doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg` : undefined,
+      author:   doc.author_name?.[0],
+      isbn:     doc.isbn?.[0],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * For any product whose category contains "book" (case-insensitive), fetches
+ * book metadata from Open Library and merges it into the ProductInput.
+ * Products whose category doesn't match books are returned unchanged.
+ */
+async function enrichBooksWithMetadata(products: ProductInput[]): Promise<ProductInput[]> {
+  const enriched: ProductInput[] = [];
+  for (const p of products) {
+    const isBook = (p.category ?? '').toLowerCase().includes('book');
+    if (isBook) {
+      const meta = await fetchOpenLibraryData(p.name);
+      if (meta) {
+        const descParts = [
+          meta.author ? `By ${meta.author}` : '',
+          meta.isbn   ? `ISBN: ${meta.isbn}` : '',
+        ].filter(Boolean);
+        enriched.push({
+          ...p,
+          imageUrl:    meta.coverUrl  ?? p.imageUrl,
+          description: descParts.length ? descParts.join(' · ') : p.description,
+        });
+        continue;
+      }
+    }
+    enriched.push(p);
+  }
+  return enriched;
+}
+
 /**
  * Returns the correct vocabulary word for a vendor's product list based on
  * their business category. Used throughout all onboarding messages so the
@@ -1643,6 +1709,10 @@ function productItemEmoji(businessType?: string): string {
 /**
  * Sends a confirmation preview of pending extracted products with Yes/No
  * interactive buttons so the vendor can approve before anything is saved.
+ *
+ * If any product carries an imageUrl (from a photo upload or a book cover
+ * fetched from Open Library), that image is sent first so the vendor can
+ * visually verify what was found, then the text confirmation follows.
  */
 async function showPendingConfirmation(
   phone: string,
@@ -1650,12 +1720,14 @@ async function showPendingConfirmation(
   businessType?: string,
 ): Promise<void> {
   const icon = productItemEmoji(businessType);
+
   const lines = products.map((p) =>
     [
       `${icon} *${p.name}*`,
       `💰 ₦${p.price.toLocaleString()}`,
-      ...(p.category    ? [`📂 ${p.category}`]    : []),
-      ...(p.description ? [`📝 ${p.description}`] : []),
+      ...(p.category    ? [`📂 ${p.category}`]                             : []),
+      ...(p.description ? [`📝 ${p.description}`]                          : []),
+      ...(p.imageUrl    ? [`🖼️ Image ${p.imageUrl.includes('openlibrary') ? 'from Open Library' : 'uploaded'}`] : []),
     ].join('\n'),
   );
 
@@ -1665,12 +1737,21 @@ async function showPendingConfirmation(
       : `Got it! Here's what I'm adding:\n\n` +
         products.map((_, i) => `*${i + 1}.* ${lines[i]}`).join('\n\n');
 
+  // Send image preview first for single-product confirmations that have an image.
+  // For multi-product batches, skip to avoid flooding.
+  const singleWithImage = products.length === 1 && products[0]?.imageUrl;
+  if (singleWithImage) {
+    const p = products[0]!;
+    const caption = `${p.name} — ₦${p.price.toLocaleString()}`;
+    await messageQueue.add({ to: phone, imageUrl: p.imageUrl, imageCaption: caption, message: '' });
+  }
+
   await messageQueue.add({
     to: phone,
     message: `${body}\n\nIs this correct?`,
     buttons: [
-      { id: 'CONFIRM_PRODUCTS', title: '✅ Yes, Add It'   },
-      { id: 'CANCEL_PRODUCTS',  title: '✏️ Fix Details'  },
+      { id: 'CONFIRM_PRODUCTS', title: '✅ Yes, Add It'  },
+      { id: 'CANCEL_PRODUCTS',  title: '✏️ Fix Details' },
     ] as InteractiveButton[],
   });
 }

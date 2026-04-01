@@ -49,6 +49,13 @@ export interface TransitionResult {
    * The order service attaches these buttons to the final enqueue call.
    */
   buttons?: InteractiveButton[];
+  /**
+   * If set, the order service sends this image (as a WhatsApp image message)
+   * BEFORE the text messages so the customer sees the product photo first.
+   */
+  imageUrl?: string;
+  /** Short caption shown beneath the product image. */
+  imageCaption?: string;
 }
 
 // ─── Input Normalisation ──────────────────────────────────────────────────────
@@ -155,6 +162,9 @@ export function handleBrowsing(
 
   // ── Digital product selected → enter Flow B ──────────────────────────────
   if (selected.productType === 'DIGITAL') {
+    const imageCaption = selected.imageUrl
+      ? `${selected.name} — ${formatNaira(selected.price)}`
+      : undefined;
     return {
       messages: [msgDigitalProductDetail(selected, lang)],
       nextState: ConversationState.ORDERING,
@@ -164,13 +174,21 @@ export function handleBrowsing(
         selectedProductId: selected.id,
       },
       buttons: [
-        { id: 'BUY',  title: '🛒 Buy Now'       },
-        { id: 'MENU', title: '🏠 Back to Menu'   },
+        { id: 'BUY',  title: '🛒 Buy Now'     },
+        { id: 'MENU', title: '🏠 Back to Menu' },
       ],
+      imageUrl:    selected.imageUrl    ?? undefined,
+      imageCaption,
     };
   }
 
   // ── Physical product selected → enter Flow A ──────────────────────────────
+  const caption = selected.imageUrl
+    ? [
+        `${selected.name} — ${formatNaira(selected.price)}`,
+        selected.description ?? '',
+      ].filter(Boolean).join('\n')
+    : undefined;
   return {
     messages: [msgAskQuantity(selected.name, selected.price, lang)],
     nextState: ConversationState.ORDERING,
@@ -183,6 +201,8 @@ export function handleBrowsing(
       pendingNote: currentData.pendingNote,
       pendingMultiQueue: currentData.pendingMultiQueue,
     },
+    imageUrl:    selected.imageUrl ?? undefined,
+    imageCaption: caption,
   };
 }
 

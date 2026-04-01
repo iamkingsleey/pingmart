@@ -294,6 +294,13 @@ export interface WhatsAppMessageJob {
   listButtonText?: string;
   /** Optional header text for the list message */
   listHeader?: string;
+  /**
+   * When set, sends a WhatsApp image message (type: "image") using this public URL.
+   * The `message` field is ignored — set `imageCaption` for caption text instead.
+   */
+  imageUrl?: string;
+  /** Optional caption for the image message (max 1024 chars). */
+  imageCaption?: string;
 }
 
 export interface IncomingMessageJob {

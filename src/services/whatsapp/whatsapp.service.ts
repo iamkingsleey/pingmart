@@ -6,7 +6,7 @@ import { env } from '../../config/env';
 import { WHATSAPP_API_BASE_URL } from '../../config/constants';
 import { logger, maskPhone } from '../../utils/logger';
 import { InteractiveButton, InteractiveListSection } from '../../types';
-import { SendTextMessageBody, SendInteractiveButtonsBody, SendInteractiveListBody } from '../../types/whatsapp';
+import { SendTextMessageBody, SendInteractiveButtonsBody, SendInteractiveListBody, SendImageMessageBody } from '../../types/whatsapp';
 
 const MESSAGES_URL = `${WHATSAPP_API_BASE_URL}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
@@ -77,8 +77,26 @@ export async function sendListMessage(
   await callWhatsAppAPI(body, to);
 }
 
+export async function sendImageMessage(
+  to: string,
+  imageUrl: string,
+  caption?: string,
+): Promise<void> {
+  const body: SendImageMessageBody = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'image',
+    image: {
+      link: imageUrl,
+      ...(caption ? { caption: caption.slice(0, 1024) } : {}),
+    },
+  };
+  await callWhatsAppAPI(body, to);
+}
+
 async function callWhatsAppAPI(
-  body: SendTextMessageBody | SendInteractiveButtonsBody | SendInteractiveListBody,
+  body: SendTextMessageBody | SendInteractiveButtonsBody | SendInteractiveListBody | SendImageMessageBody,
   to: string,
 ): Promise<void> {
   logger.debug('Sending WhatsApp message', { to: maskPhone(to), type: body.type });
