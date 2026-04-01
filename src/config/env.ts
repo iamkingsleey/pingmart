@@ -62,6 +62,14 @@ const envSchema = z.object({
   PINGMART_PHONE_NUMBER: z.string().optional(),
   // Super-admin phone number — reserved for platform-level management
   PINGMART_ADMIN_PHONE: z.string().optional(),
+
+  // AI Learning Layer
+  // When true (default): bot logs every interaction and learns from it.
+  // Set to false in tests or demo environments to skip all learning writes.
+  LEARNING_MODE: z.string().default('true').transform((v) => v.toLowerCase() !== 'false'),
+
+  // Vendor WhatsApp number (the bot's number — used for store deep-links)
+  VENDOR_WHATSAPP_NUMBER: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

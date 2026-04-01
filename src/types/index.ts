@@ -196,6 +196,19 @@ export interface SessionData {
    */
   awaitingCartReview?: boolean;
 
+  // ── Learning Layer ────────────────────────────────────────────────────────
+  /**
+   * Running count of messages in the current ordering session.
+   * Incremented on every processIncomingMessage call. Reset when a new
+   * session starts or an order is confirmed. Used by OrderIntelligence.
+   */
+  orderMessageCount?: number;
+  /**
+   * Flipped to true when the customer triggers SPEAK_TO_VENDOR in this session.
+   * Persisted so OrderIntelligence can record whether help was requested.
+   */
+  askedForHumanHelp?: boolean;
+
   // ── Support Mode (service-based vendors) ─────────────────────────────────
   /**
    * Current sub-state for support mode customer flow.

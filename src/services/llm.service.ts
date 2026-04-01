@@ -13,6 +13,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
+import {
+  findLanguagePattern,
+  saveLanguagePattern,
+  CONFIDENCE_HIGH,
+  CONFIDENCE_MEDIUM,
+} from './learning.service';
 
 const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
@@ -35,6 +41,94 @@ export type CustomerIntent =
   | { intent: 'SHOW_POPULAR' }
   | { intent: 'UNKNOWN'; rawMessage: string };
 
+/**
+ * Enriched result from `interpretMessageWithConfidence`.
+ * Every consumer receives the confidence score so it can be logged
+ * and routing decisions can adapt (clarify on low confidence).
+ */
+export interface ClassifiedIntent {
+  intent:     CustomerIntent;
+  confidence: number;           // 0.0–1.0 from LLM or pattern library
+  source:     'pattern' | 'llm' | 'fallback';
+  language?:  string;           // detected language (if non-English)
+}
+
+/**
+ * Full intent classification with confidence scoring and pattern-library lookup.
+ * Prefer this over `interpretMessage` in new code.
+ *
+ * Decision flow:
+ *   1. Check LanguagePattern library (fast, no API call)
+ *   2. If pattern confidence ≥ CONFIDENCE_HIGH → return directly
+ *   3. Otherwise call LLM (includes confidence in JSON response)
+ *   4. If LLM confidence ≥ CONFIDENCE_HIGH → save pattern for future
+ *   5. Always return { intent, confidence, source }
+ */
+export async function interpretMessageWithConfidence(
+  customerMessage: string,
+  availableProducts: string[],
+  conversationContext: string,
+  language?: string,
+): Promise<ClassifiedIntent> {
+  // ── Step 1: Check stored language patterns ──────────────────────────────────
+  if (language && language !== 'en') {
+    const patternMatch = await findLanguagePattern(language, customerMessage);
+    if (patternMatch && patternMatch.confidence >= CONFIDENCE_HIGH) {
+      logger.debug('Intent resolved from language pattern', {
+        language,
+        intent: patternMatch.intent,
+        confidence: patternMatch.confidence,
+      });
+      // Reconstruct a minimal CustomerIntent from the stored intent name
+      const intent = patternToIntent(patternMatch.intent, customerMessage);
+      return { intent, confidence: patternMatch.confidence, source: 'pattern', language };
+    }
+  }
+
+  // ── Step 2: LLM classification ──────────────────────────────────────────────
+  const llmResult = await interpretMessage(customerMessage, availableProducts, conversationContext);
+
+  // Confidence is embedded in the LLM response if we use the updated prompt;
+  // fall back to a heuristic if the LLM didn't include it.
+  const confidence = extractConfidence(llmResult);
+
+  // ── Step 3: Save high-confidence patterns for future lookups ────────────────
+  if (language && language !== 'en' && confidence >= CONFIDENCE_HIGH) {
+    saveLanguagePattern(language, llmResult.intent, customerMessage);
+  }
+
+  return { intent: llmResult, confidence, source: 'llm', language };
+}
+
+/** Convert a stored intent name back to a minimal CustomerIntent object. */
+function patternToIntent(intentName: string, rawMessage: string): CustomerIntent {
+  switch (intentName) {
+    case 'MENU':             return { intent: 'MENU' };
+    case 'CANCEL':           return { intent: 'CANCEL' };
+    case 'CONFIRM':          return { intent: 'CONFIRM' };
+    case 'CART':             return { intent: 'CART' };
+    case 'DELIVERY_ENQUIRY': return { intent: 'DELIVERY_ENQUIRY' };
+    case 'TRACK_ORDER':      return { intent: 'TRACK_ORDER' };
+    case 'SPEAK_TO_VENDOR':  return { intent: 'SPEAK_TO_VENDOR' };
+    case 'HELP':             return { intent: 'HELP' };
+    case 'GREETING':         return { intent: 'GREETING' };
+    case 'REPEAT_ORDER':     return { intent: 'REPEAT_ORDER' };
+    case 'SHOW_CHEAPEST':    return { intent: 'SHOW_CHEAPEST' };
+    case 'SHOW_POPULAR':     return { intent: 'SHOW_POPULAR' };
+    default:                 return { intent: 'UNKNOWN', rawMessage };
+  }
+}
+
+/** Extract confidence from an LLM-returned intent (may include `_confidence` field). */
+function extractConfidence(intent: CustomerIntent & { _confidence?: number }): number {
+  if (typeof intent._confidence === 'number') {
+    return Math.max(0, Math.min(1, intent._confidence));
+  }
+  // Heuristic: UNKNOWN = low confidence, everything else = medium-high
+  if (intent.intent === 'UNKNOWN') return 0.40;
+  return CONFIDENCE_MEDIUM + 0.10; // 0.70 default for non-UNKNOWN
+}
+
 export async function interpretMessage(
   customerMessage: string,
   availableProducts: string[],
@@ -46,6 +140,7 @@ Your job is to read a customer's message and return a JSON object representing t
 Available products in this store: ${availableProducts.join(', ')}
 Current conversation context: ${conversationContext}
 Return ONLY a valid JSON object — no explanation, no markdown, no extra text.
+Include a "_confidence" field (0.0–1.0) indicating how certain you are.
 Possible intents and their JSON format:
 - View menu: {"intent": "MENU"}
 - Order a product: {"intent": "ORDER", "productHint": "product name here", "quantity": 1}
@@ -122,11 +217,13 @@ Rules:
   "What can I order?" → {"intent": "MENU"}
   "See menu" → {"intent": "MENU"}
   "Menu" → {"intent": "MENU"}
-- Always return valid JSON`;
+- Always return valid JSON
+- Always include "_confidence" field: 1.0 = certain, 0.5 = unsure, 0.0 = guessing
+  Example: {"intent": "MENU", "_confidence": 0.97}`;
 
     const response = await client.messages.create({
       model: env.ANTHROPIC_MODEL,
-      max_tokens: 150,
+      max_tokens: 160,
       messages: [
         {
           role: 'user',

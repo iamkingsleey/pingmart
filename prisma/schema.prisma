@@ -86,6 +86,10 @@ model Vendor {
   supportKnowledge     SupportKnowledge[]
   serviceItems         ServiceItem[]
   bookings             Booking[]
+  // Learning layer relations
+  interactionLogs      InteractionLog[]
+  uncertainInteractions UncertainInteraction[]
+  orderIntelligence    OrderIntelligence[]
 
   @@map("vendors")
 }
@@ -449,6 +453,18 @@ enum BookingStatus {
   CANCELLED
 }
 
+// ─── AI Learning Layer ────────────────────────────────────────────────────────
+// Every interaction trains the bot. Nothing is hardcoded where learning is
+// possible instead. Phone numbers are always stored masked; payment details
+// are never stored here.
+
+enum MessageType {
+  TEXT
+  VOICE
+  IMAGE
+  INTERACTIVE
+}
+
 model Booking {
   id               String        @id @default(uuid())
   vendorId         String
@@ -467,4 +483,101 @@ model Booking {
   @@index([vendorId])
   @@index([vendorId, status])
   @@map("bookings")
+}
+
+// ─── InteractionLog ───────────────────────────────────────────────────────────
+// Ground-truth dataset: every incoming message with intent classification result.
+// Raw phone numbers are NEVER stored here — always masked via maskPhone().
+
+model InteractionLog {
+  id                  String      @id @default(cuid())
+  vendorId            String?
+  customerPhoneMasked String                      // e.g. "+234****4020"
+  sessionId           String?
+  messageType         MessageType @default(TEXT)
+  rawInput            String
+  detectedLanguage    String?                     // en | pid | ig | yo | ha
+  detectedIntent      String?                     // MENU | ORDER | UNKNOWN | …
+  confidenceScore     Float?                      // 0.0–1.0 from LLM
+  resolvedIntent      String?                     // what the bot actually did
+  wasCorrect          Boolean?                    // null until confirmed by feedback
+  flowState           String?                     // IDLE | BROWSING | ORDERING | …
+  responseTimeMs      Int?
+  createdAt           DateTime    @default(now())
+
+  vendor Vendor? @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  @@index([vendorId, createdAt])
+  @@index([detectedLanguage, detectedIntent])
+  @@index([confidenceScore])
+  @@index([createdAt])
+  @@map("interaction_logs")
+}
+
+// ─── LanguagePattern ─────────────────────────────────────────────────────────
+// Growing library of real Nigerian expressions mapped to intents.
+// Replaces hardcoded translations — single source of truth for language learning.
+
+model LanguagePattern {
+  id                String   @id @default(cuid())
+  language          String                        // en | pid | ig | yo | ha
+  intent            String                        // CustomerIntent name
+  exampleInputs     String[]                      // real user inputs that triggered this intent
+  preferredResponse String?                       // best response seen for this pattern
+  useCount          Int      @default(1)
+  lastSeenAt        DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  @@unique([language, intent])
+  @@index([language])
+  @@index([useCount])
+  @@map("language_patterns")
+}
+
+// ─── UncertainInteraction ─────────────────────────────────────────────────────
+// Inputs where the bot was unsure (confidence < 0.60).
+// These are the priority training cases — the expressions the bot struggles most with.
+
+model UncertainInteraction {
+  id                  String   @id @default(cuid())
+  vendorId            String?
+  customerPhoneMasked String
+  rawInput            String
+  detectedLanguage    String?
+  suggestedIntent     String?                     // what the LLM guessed
+  confidenceScore     Float
+  flowState           String?
+  resolved            Boolean  @default(false)   // true once a human has reviewed it
+  resolvedIntent      String?                     // correct intent after human review
+  createdAt           DateTime @default(now())
+
+  vendor Vendor? @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  @@index([resolved, confidenceScore])
+  @@index([createdAt])
+  @@map("uncertain_interactions")
+}
+
+// ─── OrderIntelligence ────────────────────────────────────────────────────────
+// Basket analysis + ordering behaviour data. Powers product suggestions and
+// drop-off detection. Never stores PII — vendor + order IDs only.
+
+model OrderIntelligence {
+  id           String   @id @default(cuid())
+  vendorId     String
+  orderId      String   @unique
+  productIds   String[]                           // IDs of products in the order
+  language     String?                            // language the customer used
+  messageCount Int                                // messages taken to complete the order
+  askedForHelp Boolean  @default(false)
+  hourOfDay    Int                                // 0–23 (Lagos time)
+  dayOfWeek    Int                                // 0=Sun … 6=Sat
+  completedAt  DateTime @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@index([vendorId, hourOfDay])
+  @@index([productIds])
+  @@map("order_intelligence")
 }

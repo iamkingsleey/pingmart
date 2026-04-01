@@ -76,6 +76,13 @@ import { sessionTimeoutQueue } from '../../queues/sessionTimeout.queue';
 import { SessionTimeoutJobData } from '../../jobs/sessionTimeout.job';
 import { redis } from '../../utils/redis';
 import { notifyVendorNumbers } from '../vendor-notify.service';
+import {
+  logUncertainInteraction,
+  logOrderIntelligence,
+  saveLanguagePattern,
+  CONFIDENCE_HIGH,
+  CONFIDENCE_MEDIUM,
+} from '../learning.service';
 import { AsyncLocalStorage } from 'async_hooks';
 import { resolveStoreVocabulary, applyVocabulary } from '../../utils/store-vocabulary';
 import { StoreVocabulary } from '../../types';
@@ -490,6 +497,12 @@ export async function processIncomingMessage(
         }
       }
     }
+    // ── Learning: increment message count for this session ───────────────────
+    currentData = {
+      ...currentData,
+      orderMessageCount: (currentData.orderMessageCount ?? 0) + 1,
+    };
+
     let messageToProcess = rawMessage;
     let nlpIntent: string | null = null;
     let nlpResult: Awaited<ReturnType<typeof normaliseMessage>> | null = null;
@@ -497,6 +510,32 @@ export async function processIncomingMessage(
       nlpResult = await normaliseMessage(rawMessage, products, currentState);
       messageToProcess = nlpResult.text;
       nlpIntent = nlpResult.intent.intent;
+
+      // ── Learning: log intent classification metadata ────────────────────────
+      const intentConfidence = (nlpResult.intent as { _confidence?: number })._confidence;
+      if (intentConfidence !== undefined) {
+        // Log uncertain interactions for human review
+        if (intentConfidence < CONFIDENCE_MEDIUM) {
+          logUncertainInteraction({
+            vendorId:        vendor.id,
+            customerPhone:   from,
+            rawInput:        rawMessage,
+            detectedLanguage: language !== 'en' ? language : undefined,
+            suggestedIntent: nlpIntent ?? undefined,
+            confidenceScore: intentConfidence,
+            flowState:       currentState,
+          });
+        }
+        // Save high-confidence non-English patterns to the pattern library
+        if (intentConfidence >= CONFIDENCE_HIGH && language !== 'en' && nlpIntent && nlpIntent !== 'UNKNOWN') {
+          saveLanguagePattern(language, nlpIntent, rawMessage);
+        }
+      }
+
+      // Track when customer asks for a human (for OrderIntelligence)
+      if (nlpIntent === 'SPEAK_TO_VENDOR' && !currentData.askedForHumanHelp) {
+        currentData = { ...currentData, askedForHumanHelp: true };
+      }
     }
 
     // ── Confusion loop: track consecutive UNKNOWN intents ─────────────────────
@@ -1403,6 +1442,16 @@ async function createOrderAndInitiatePayment(
   });
 
   logger.info('Order created', { orderId: order.id, orderType, paymentMethod, reference: maskReference(reference) });
+
+  // ── Learning: log basket analysis (fire-and-forget) ────────────────────────
+  logOrderIntelligence({
+    vendorId:     vendor.id,
+    orderId:      order.id,
+    productIds:   cart.map((i) => i.productId),
+    language:     language !== 'en' ? language : undefined,
+    messageCount: sessionData.orderMessageCount ?? 1,
+    askedForHelp: sessionData.askedForHumanHelp ?? false,
+  });
 
   // ── Route payment by method ────────────────────────────────────────────────
 

@@ -13,10 +13,11 @@
 3. [Customer Features](#customer-features)
 4. [Payment Infrastructure](#payment-infrastructure)
 5. [Intelligence Layer](#intelligence-layer)
-6. [Support Mode](#support-mode)
-7. [Infrastructure & Security](#infrastructure--security)
-8. [In Progress](#in-progress)
-9. [Planned / Roadmap](#planned--roadmap)
+6. [AI Learning Layer](#ai-learning-layer)
+7. [Support Mode](#support-mode)
+8. [Infrastructure & Security](#infrastructure--security)
+9. [In Progress](#in-progress)
+10. [Planned / Roadmap](#planned--roadmap)
 
 ---
 
@@ -407,6 +408,144 @@ Groq Whisper API transcribes voice notes to text. Transcribed text is then proce
 - Sends reorder reminders via approved Meta message templates
 - Frequency controlled by `REORDER_DAYS_AFTER` env var (7=weekly, 14=bi-weekly, 30=monthly)
 - 30-day rate limit per customer per vendor
+
+---
+
+## AI Learning Layer
+
+> Core principle: every message, order, voice note, and payment interaction is a training signal. The bot gets smarter over time and requires less hardcoding the more it is used.
+
+### Interaction Logging
+**Status:** ✅ Built
+
+Every incoming message is logged to the `InteractionLog` table with:
+- Masked phone number (raw phones are never stored in logs)
+- Message type: TEXT | VOICE | IMAGE | INTERACTIVE
+- Raw input text
+- Detected language (en | pid | ig | yo | ha)
+- Detected intent and LLM confidence score (0.0–1.0)
+- Resolved intent (what the bot actually did)
+- Flow state at time of message (IDLE | BROWSING | ORDERING | …)
+- Response time in milliseconds
+
+This table is the ground-truth training dataset for all future improvements.
+
+### Language Pattern Library
+**Status:** ✅ Built
+
+Replaces hardcoded translations with a living `LanguagePattern` table that grows with real usage.
+
+**How it works:**
+- When the LLM classifies a Pidgin, Igbo, Yoruba, or Hausa message with confidence ≥ 85%, the raw input and intent are saved to the pattern library
+- Next time the same or similar expression is seen, the bot checks the pattern library first — no LLM call needed
+- Token-overlap similarity matching (≥ 70% token overlap → 82–90% confidence)
+- Pattern library caps at 50 examples per intent/language pair (most recent kept)
+- Over time, common expressions like "abeg help me" → HELP no longer need LLM inference
+
+**Growth:** Starts empty, grows automatically. After 1,000+ interactions, the most common Nigerian expressions are resolved locally, reducing Anthropic API costs.
+
+### Confidence Scoring
+**Status:** ✅ Built
+
+Every LLM intent classification includes a `_confidence` field (0.0–1.0).
+
+| Confidence | Action |
+|---|---|
+| ≥ 0.85 | Act directly; save to language pattern library |
+| 0.60–0.84 | Act but log for review (no pattern save) |
+| < 0.60 | Log to UncertainInteractions; ask clarifying question |
+
+Low-confidence inputs (< 0.60) are saved to `UncertainInteractions` — the priority training cases. These are the expressions the bot struggles with most and should be reviewed first when improving the model.
+
+### Order Intelligence (Basket Analysis)
+**Status:** ✅ Built
+
+After every completed order, the following is recorded in `OrderIntelligence`:
+- Which product IDs were in the order (for co-purchase analysis)
+- Language the customer used
+- Number of messages it took to complete the order
+- Whether the customer requested human help at any point
+- Hour of day and day of week (Lagos time) the order was placed
+
+**Future use:**
+- "Customers who ordered CeraVe also got The Ordinary Niacinamide" suggestions
+- Identify products that cause the most confusion (high message count before order)
+- Peak ordering hour analysis per vendor
+
+### Voice Note Learning
+**Status:** ✅ Built
+
+All voice note interactions are logged via the `InteractionLog` table (type: VOICE). The raw transcription is the `rawInput`. Patterns from voice notes feed into the same `LanguagePattern` table as text inputs — over time, common Pidgin voice phrases are learned and resolved without LLM.
+
+### Uncertain Interaction Tracking
+**Status:** ✅ Built
+
+`UncertainInteraction` table captures every input where the bot was unsure (confidence < 0.60):
+- Raw input and suggested intent
+- Confidence score
+- Flow state at time of message
+- `resolved` flag + `resolvedIntent` for when a human reviews and corrects it
+
+These records are the highest-priority training cases for improving the bot.
+
+### Weekly Learning Summary
+**Status:** ✅ Built
+
+Every Monday at 08:00 Lagos time (WAT), a cron job runs and logs a full summary to Railway:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 PINGMART AI WEEKLY LEARNING SUMMARY
+   Week ending 2026-04-07
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Total interactions:        1,247
+🧠 Average confidence:        81.3%
+❓ Uncertain interactions:    43 (confidence < 60%)
+🆕 New language patterns:     12
+📦 Orders logged:             89
+
+📈 Top intents this week:
+    ORDER: 412
+    MENU: 231
+    CONFIRM: 198
+    ...
+
+🚪 Most common flow states:
+    ORDERING: 892
+    BROWSING: 341
+    ...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### FAQ Auto-Generation
+**Status:** ✅ Built
+
+After a vendor receives 3+ UNKNOWN-intent questions in a week, the bot messages the vendor's WhatsApp number:
+
+> 📊 *Weekly Bot Insight — Salon by Ada*
+> 3 customer questions this week couldn't be answered automatically:
+> 1. _"Do you do house calls?"_
+> 2. _"What relaxers do you use?"_
+> 3. _"Can I book for a group?"_
+> Would you like to add answers so I can respond automatically next time?
+> Reply *ADD FAQ* to add answers now, or ignore to skip.
+
+This turns customer confusion into vendor knowledge base growth automatically.
+
+### Payment Nudge
+**Status:** ✅ Built
+
+Customers who have been on the `AWAITING_PAYMENT` step for more than 30 minutes receive an automatic nudge in their preferred language:
+
+> "Still need help with payment? Reply HELP and I'll guide you through it. 💳"
+
+Available in all 5 languages (English, Pidgin, Igbo, Yoruba, Hausa).
+
+### Privacy Guarantees
+- Phone numbers are always masked before storage (e.g. `+234****4020`)
+- Payment details, bank account numbers, and Paystack keys are never logged anywhere
+- All learning happens server-side on Railway — no data leaves except to the Anthropic LLM API
+- `LEARNING_MODE=false` disables all write operations (useful for testing)
 
 ---
 
