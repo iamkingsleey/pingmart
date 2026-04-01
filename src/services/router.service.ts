@@ -27,7 +27,7 @@ import { sessionRepository } from '../repositories/session.repository';
 import { orderRepository } from '../repositories/order.repository';
 import { processIncomingMessage } from './order/order.service';
 import { handleVendorStatusCommand } from './delivery/physicalDelivery.service';
-import { startVendorOnboarding, handleVendorOnboarding, handleVendorProductPhoto } from './vendor-onboarding.service';
+import { startVendorOnboarding, handleVendorOnboarding, handleVendorProductPhoto, handleVendorDocument } from './vendor-onboarding.service';
 import { handleVendorDashboard } from './vendor-management.service';
 import { handleSupportCustomerMessage, showSupportWelcome } from './support-customer.service';
 import { handleSupportVendorDashboard } from './support-vendor.service';
@@ -60,6 +60,9 @@ const STORE_CODE_REGEX = /^[A-Z0-9][A-Z0-9_]{3,19}$/;
  * @param messageId            Meta message ID for dedup (may be empty string)
  * @param imageMediaId         WhatsApp media ID when the message is an image
  * @param imageCaption         Caption attached to the image, if any
+ * @param documentMediaId      WhatsApp media ID when the message is a document (xlsx, csv, etc.)
+ * @param documentFileName     Original filename reported by WhatsApp
+ * @param documentMimeType     MIME type reported by WhatsApp
  */
 export async function routeIncomingMessage(
   senderPhone: string,
@@ -68,6 +71,9 @@ export async function routeIncomingMessage(
   messageId: string,
   imageMediaId?: string,
   imageCaption?: string,
+  documentMediaId?: string,
+  documentFileName?: string,
+  documentMimeType?: string,
 ): Promise<void> {
   // ── 1. Dedup ──────────────────────────────────────────────────────────────
   // Prevents double-processing from Meta retries AND Bull stall-retries.
@@ -81,13 +87,24 @@ export async function routeIncomingMessage(
     }
   }
 
-  logger.info('Router: routing message', { from: maskPhone(senderPhone), hasImage: !!imageMediaId });
+  logger.info('Router: routing message', {
+    from: maskPhone(senderPhone),
+    hasImage: !!imageMediaId,
+    hasDocument: !!documentMediaId,
+  });
 
   // ── 1b. Image message routing ─────────────────────────────────────────────
   // Image messages have an empty text payload. Route them straight to the
   // dedicated image handler so they never fall through to the text paths.
   if (imageMediaId) {
     await routeImageMessage(senderPhone, imageMediaId, imageCaption ?? '');
+    return;
+
+  // ── 1c. Document message routing ─────────────────────────────────────────
+  // Excel/CSV uploads: route to the vendor document handler when the vendor is
+  // in ADDING_PRODUCTS mode. All other senders get a standard nudge.
+  } else if (documentMediaId) {
+    await routeDocumentMessage(senderPhone, documentMediaId, documentFileName ?? '', documentMimeType ?? '');
     return;
   }
 
@@ -654,4 +671,40 @@ async function routeImageMessage(
     message: `Thanks for the image! 📸 To order or browse products, just type *MENU*. 😊`,
   });
   logger.info('Image routed to fallback nudge', { from: maskPhone(phone), lang });
+}
+
+/**
+ * Handles an inbound document message (Excel, CSV, etc.).
+ *
+ * Vendors in ADDING_PRODUCTS step (sheet mode, or not yet chosen a mode) get
+ * their file downloaded and parsed — same preview+confirm flow as Google Sheets.
+ * Everyone else receives a standard "can't process files" nudge.
+ */
+async function routeDocumentMessage(
+  phone: string,
+  documentMediaId: string,
+  fileName: string,
+  mimeType: string,
+): Promise<void> {
+  const vendor = await prisma.vendor.findUnique({ where: { ownerPhone: phone } });
+  if (vendor) {
+    const setupSession = await prisma.vendorSetupSession.findUnique({
+      where: { vendorId: vendor.id },
+    });
+    if (setupSession && !setupSession.completedAt && setupSession.step === 'ADDING_PRODUCTS') {
+      const data = (setupSession.collectedData ?? {}) as Record<string, unknown>;
+      // Accept documents in sheet mode, or when no mode has been chosen yet
+      if (data.productInputMode === 'sheet' || !data.productInputMode) {
+        await handleVendorDocument(phone, documentMediaId, fileName, mimeType, vendor, setupSession);
+        return;
+      }
+    }
+  }
+
+  // Default: nudge (document uploads aren't supported for customers or other vendor states)
+  await messageQueue.add({
+    to: phone,
+    message: `Thanks for the file! To order or browse, just type *MENU*. 😊`,
+  });
+  logger.info('Document routed to fallback nudge', { from: maskPhone(phone) });
 }

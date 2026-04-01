@@ -15,9 +15,10 @@
 5. [Intelligence Layer](#intelligence-layer)
 6. [AI Learning Layer](#ai-learning-layer)
 7. [Support Mode](#support-mode)
-8. [Infrastructure & Security](#infrastructure--security)
-9. [In Progress](#in-progress)
-10. [Planned / Roadmap](#planned--roadmap)
+8. [Performance](#performance)
+9. [Infrastructure & Security](#infrastructure--security)
+10. [In Progress](#in-progress)
+11. [Planned / Roadmap](#planned--roadmap)
 
 ---
 
@@ -182,11 +183,26 @@ Applied consistently to all messages, buttons, and prompts in the session.
 ### Product Listing Options
 **Status:** ✅ Built
 
-Three methods offered to vendors for adding products:
+Four methods offered to vendors for adding products:
 
 1. **Type products** — natural language or pipe-separated format
-2. **Share Google Sheet link** — bot fetches sheet and auto-imports rows
-3. **Send product photos** — vendor sends images with captions, LLM extracts details
+2. **Share Google Sheet link** — bot fetches the public sheet and auto-imports rows
+3. **Upload Excel or CSV file** — vendor sends `.xlsx`, `.xls`, or `.csv` directly in chat; bot parses and imports (see below)
+4. **Send product photos** — vendor sends images with captions, LLM extracts details
+
+---
+
+### Direct Excel / CSV Upload
+**Status:** ✅ Built
+
+Vendors can upload a spreadsheet file directly in WhatsApp instead of sharing a Google Sheets link.
+
+- Supported formats: `.xlsx`, `.xls`, `.csv`
+- Bot downloads from Meta CDN, parses with the `xlsx` package, converts to CSV, then reuses the same flexible parser as Google Sheets
+- Column detection: `name/item/product/title`, `price/cost/amount/rate/fee`, `category/type/group/section` — column order doesn't matter
+- Preview + confirm flow identical to Google Sheets import: shows first 5 rows + total count
+- **Edit + re-import flow**: vendor taps *"✏️ Edit an item"* → bot instructs them to edit externally, sends *EDITED* when done → bot re-reads the source (re-fetches Sheet URL or asks for updated file)
+- Ack message sent immediately so vendor knows the file was received while parsing runs
 
 ---
 
@@ -615,6 +631,71 @@ When a customer asks a question the bot cannot answer (no matching FAQ, LLM not 
 - All vendor notification numbers receive the customer's phone and exact question
 - Vendor responds directly to the customer's WhatsApp number outside the bot
 - No dead ends — customer always gets a response path
+
+---
+
+## Performance
+
+### Acknowledgment Messages (Perceived Latency)
+**Status:** ✅ Built
+
+For any operation that takes > 800ms, the bot sends an immediate ack message before processing begins, so the user never sits in silence.
+
+| Operation | Ack message |
+|---|---|
+| Google Sheets fetch | `🔗 Fetching your sheet... one moment!` |
+| Excel/CSV file parse | `📊 Got your file! Give me a moment to go through it...` |
+| Product photo processing | `📸 Checking out what you sent...` |
+| NLU LLM call (pattern cache miss) | Language-aware: `Got you — working on it!` / `Abeg wait small...` / `Chere obere oge...` etc. |
+| Voice note transcription | `🎙️ Got your voice note! Give me a second...` |
+
+Ack messages are sent via `sendTextMessage` (direct API call, bypasses Bull queue) to guarantee instant delivery before the slow operation begins.
+
+---
+
+### Read Receipts / Typing Indicator
+**Status:** ✅ Built
+
+Every incoming message is marked as "read" (blue double-tick) immediately when the Bull worker picks it up — before any processing begins. This is done via a fire-and-forget `markMessageRead(messageId)` call at the start of each job.
+
+Effect: the sender sees the bot has seen their message within ~100ms of sending, reducing perceived latency significantly even when the actual response takes 2–3s.
+
+---
+
+### Redis Caching
+**Status:** ✅ Built
+
+**Vendor profile cache** (10-minute TTL, `vendor:id:{id}` / `vendor:wa:{phone}`)
+- `vendorRepository.findById()` and `findByWhatsAppNumber()` cache results in Redis
+- Invalidated on any `vendorRepository.update()` call
+- Eliminates repeated PostgreSQL roundtrips for the same vendor across a conversation
+
+**Product catalogue cache** (5-minute TTL, `products:available:{vendorId}`)
+- `productRepository.findAvailableByVendor()` caches the full product list
+- Invalidated on `create`, `update`, and `delete`
+- Most impactful optimisation — product list is fetched on every customer message (NLU needs product names for context)
+
+---
+
+### Database Indexes
+**Status:** ✅ Built
+
+All hot-path query columns are indexed:
+
+| Table | Indexed columns |
+|---|---|
+| `conversation_sessions` | `whatsappNumber`, `expiresAt`, `(whatsappNumber, vendorId)` unique |
+| `products` | `vendorId`, `(vendorId, isAvailable)`, `(vendorId, productType)` |
+| `orders` | `vendorId`, `customerId`, `status`, `paystackReference` |
+| `interaction_logs` | `(vendorId, createdAt)`, `(detectedLanguage, detectedIntent)`, `createdAt` |
+| `vendor` | `whatsappNumber` (unique), `ownerPhone` (unique), `storeCode` (unique) |
+
+---
+
+### LLM Model Selection
+**Status:** ✅ Built
+
+All real-time intent classification uses **Claude Haiku** (`claude-haiku-4-5`) — 3–5× faster than Sonnet/Opus with equivalent accuracy for Nigerian Pidgin and short order messages. Configured via `ANTHROPIC_MODEL` env var (default: `claude-haiku-4-5`).
 
 ---
 

@@ -17,6 +17,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import fetch from 'node-fetch';
+import * as XLSX from 'xlsx';
 import { Vendor, VendorSetupSession, Prisma } from '@prisma/client';
 import { prisma } from '../repositories/prisma';
 import { messageQueue } from '../queues/message.queue';
@@ -28,6 +29,7 @@ import { normalisePhone } from '../utils/formatters';
 import { env } from '../config/env';
 import { PLAN_NOTIFICATION_LIMITS, PLAN_UPGRADE_PRICING } from '../config/constants';
 import { detectLanguageSwitchRequest } from './llm.service';
+import { sendTextMessage } from './whatsapp/whatsapp.service';
 import { redis } from '../utils/redis';
 import { Language } from '../i18n';
 import {
@@ -102,6 +104,12 @@ interface CollectedData {
   // Notification numbers (collected in NOTIFICATION_SETUP, before confirmation)
   // Stored as E.164 strings. The owner's own phone is always saved as primary at activation.
   notificationNumbers?: string[];
+
+  // Spreadsheet import re-edit tracking
+  // Set when vendor taps "✏️ Edit an item" on the import preview.
+  // sourceUrl: original Google Sheets URL, or '' for file uploads.
+  pendingImportSourceUrl?: string;
+  pendingImportAwaitingEdit?: boolean;
 }
 
 // ─── Required info fields — all must be present before advancing ──────────────
@@ -128,6 +136,39 @@ const ONBOARDING_LANG_CONFIRM: Record<Language, string> = {
   yo:  `Ko problem! Emi yoo ba ẹ sọrọ ní Yorùbá. Jẹ ká tẹsiwaju pẹlu iṣeto itaja rẹ. 😊`,
   ha:  `To! Zan yi magana da kai da Hausa. Mu ci gaba da saita kantin ku. 😊`,
 };
+
+// ─── Low-latency helpers ─────────────────────────────────────────────────────
+
+/**
+ * Sends an immediate acknowledgment message, bypassing the Bull queue so it
+ * arrives before any heavy async operation (file parsing, LLM calls, CDN downloads).
+ * Errors are caught and logged — never rethrown — so they never block the main flow.
+ */
+async function sendAck(phone: string, text: string): Promise<void> {
+  try {
+    await sendTextMessage(phone, text);
+  } catch (err) {
+    logger.warn('sendAck failed', { phone: maskPhone(phone), err });
+  }
+}
+
+/**
+ * Downloads a WhatsApp media file from Meta's CDN and returns it as a Buffer.
+ * Step 1: resolve the CDN URL from the media ID via Graph API.
+ * Step 2: download the file using the CDN URL.
+ */
+async function downloadMediaBuffer(mediaId: string): Promise<Buffer> {
+  const metaRes = await fetch(`https://graph.facebook.com/v19.0/${mediaId}`, {
+    headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` },
+  });
+  if (!metaRes.ok) throw new Error(`Media URL fetch ${metaRes.status}`);
+  const { url } = await metaRes.json() as { url: string };
+  const fileRes = await fetch(url, {
+    headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` },
+  });
+  if (!fileRes.ok) throw new Error(`Media download ${fileRes.status}`);
+  return Buffer.from(await fileRes.arrayBuffer());
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -322,6 +363,48 @@ export async function handleVendorOnboarding(
     }
   }
 
+  // ── EDITED keyword — vendor signals they've made external edits to their sheet ─
+  // Runs before step dispatch so it works regardless of which sub-step we're in.
+  // Only active when pendingImportAwaitingEdit is true; otherwise falls through normally.
+  const trimmedMsg = message.trim();
+  const isEditedKeyword =
+    /^EDITED$/i.test(trimmedMsg) ||
+    ['i don edited am', 'i don fix am', 'done editing', 'edited am'].some((v) =>
+      trimmedMsg.toLowerCase().includes(v),
+    );
+
+  if (isEditedKeyword && data.pendingImportAwaitingEdit) {
+    const sourceUrl = data.pendingImportSourceUrl ?? '';
+    const resetData: CollectedData = {
+      ...data,
+      pendingImportAwaitingEdit: undefined,
+      pendingProducts: undefined,
+      pendingIsDone: undefined,
+    };
+
+    if (sourceUrl.includes('docs.google.com/spreadsheets')) {
+      // Re-fetch the Google Sheet and show updated preview
+      await sendAck(phone, 'Re-reading your sheet... ⏳');
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data: { collectedData: resetData as unknown as PrismaJson },
+      });
+      await handleSheetImport(phone, sourceUrl, vendor, session, resetData);
+    } else {
+      // File upload source — ask for new file
+      const fileWaitData: CollectedData = { ...resetData, productInputMode: 'sheet' };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data: { collectedData: fileWaitData as unknown as PrismaJson },
+      });
+      await messageQueue.add({
+        to: phone,
+        message: `Please send the updated Excel file and I'll read it again 📎`,
+      });
+    }
+    return;
+  }
+
   switch (session.step) {
     case 'COLLECTING_INFO':
       await handleCollectingInfo(phone, message, vendor, session, data);
@@ -505,7 +588,7 @@ async function handleCollectingInfo(
           title: 'Choose a method',
           rows: [
             { id: 'ADD_PRODUCTS_TEXT',     title: typeLabel },
-            { id: 'ADD_PRODUCTS_SHEET',    title: '📊 Google Sheet' },
+            { id: 'ADD_PRODUCTS_SHEET',    title: '📊 Spreadsheet / Sheet' },
             { id: 'ADD_PRODUCTS_PHOTOS',   title: '📸 Send photos' },
             { id: 'ADD_PRODUCTS_SERVICES', title: '🛠️ List my services' },
           ],
@@ -632,6 +715,29 @@ async function handleAddingProducts(
       return;
     }
 
+    if (upper === 'EDIT_IMPORT_ITEM') {
+      // Vendor wants to correct their sheet/file before importing.
+      // Tell them to make changes externally and signal with EDITED when done.
+      const lang = ((await redis.get(onboardingLangKey(phone))) as Language | null) ?? 'en';
+      const EDIT_MESSAGES: Record<Language, string> = {
+        en:  `Go ahead and make your edits. When you're done, send *EDITED* and I'll re-read your sheet 👍`,
+        pid: `Go edit am. When you don finish, send *EDITED* make I read am again 👍`,
+        yo:  `Ṣatunkọ rẹ. Nígbà tí o bá parí, fi *EDITED* ránṣẹ́ kí n tún ka 👍`,
+        ha:  `Yi gyaran ka. Idan ka gama, aika *EDITED* zan sake karanta 👍`,
+        ig:  `Dezie ya. Mgbe ị mechara, ziga *EDITED* ka m gụọ ya ọzọ 👍`,
+      };
+      const newData: CollectedData = { ...data, pendingImportAwaitingEdit: true };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data: { collectedData: newData as unknown as PrismaJson },
+      });
+      await messageQueue.add({
+        to: phone,
+        message: EDIT_MESSAGES[lang] ?? EDIT_MESSAGES.en,
+      });
+      return;
+    }
+
     // Anything else — re-show the confirmation so the vendor can tap Yes or No
     await showPendingConfirmation(phone, data.pendingProducts, data.businessType);
     return;
@@ -687,11 +793,15 @@ async function handleAddingProducts(
     await messageQueue.add({
       to: phone,
       message:
-        `📊 *Google Sheets Import*\n\n` +
+        `📊 *Spreadsheet Import*\n\n` +
+        `You can import your products two ways:\n\n` +
+        `*Option A — Google Sheets link:*\n` +
         `1. Open your sheet\n` +
         `2. Click *Share → Anyone with the link → Viewer*\n` +
-        `3. Copy the link and paste it here\n\n` +
-        `Your sheet should have columns for *Name, Price, Category* ` +
+        `3. Paste the link here\n\n` +
+        `*Option B — Upload a file:*\n` +
+        `Just send an Excel (.xlsx) or CSV file directly in this chat 📎\n\n` +
+        `Your sheet/file should have columns for *Name, Price, Category* ` +
         `(column order doesn't matter — I'll figure it out). 😊`,
     });
     return;
@@ -874,6 +984,9 @@ async function handleSheetImport(
   // Google auth cookies and returns empty rows when called from a server.
   const csvUrl  = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv`;
 
+  // Acknowledge immediately — fetching + parsing a sheet can take 2–4 s
+  await sendAck(phone, '🔗 Fetching your sheet... one moment!');
+
   let csvText: string;
   try {
     const res = await fetch(csvUrl, { redirect: 'follow' });
@@ -913,7 +1026,14 @@ async function handleSheetImport(
   }
 
   const enrichedProducts = await enrichBooksWithMetadata(products);
-  const newData: CollectedData = { ...data, pendingProducts: enrichedProducts, pendingIsDone: true };
+  const newData: CollectedData = {
+    ...data,
+    pendingProducts: enrichedProducts,
+    pendingIsDone: true,
+    // Store the original URL so EDITED can re-fetch without vendor re-pasting it
+    pendingImportSourceUrl: message,
+    pendingImportAwaitingEdit: undefined,
+  };
   await prisma.vendorSetupSession.update({
     where: { id: session.id },
     data: { collectedData: newData as unknown as PrismaJson },
@@ -962,6 +1082,7 @@ async function showSheetImportPreview(
     message: body,
     buttons: [
       { id: 'CONFIRM_PRODUCTS', title: '✅ Yes, Import All' },
+      { id: 'EDIT_IMPORT_ITEM', title: '✏️ Edit an item'   },
       { id: 'CANCEL_PRODUCTS',  title: '❌ Cancel'          },
     ] as InteractiveButton[],
   });
@@ -1060,6 +1181,9 @@ export async function handleVendorProductPhoto(
   session: VendorSetupSession,
 ): Promise<void> {
   const data = (session.collectedData as unknown as CollectedData) ?? { history: [] };
+
+  // Acknowledge immediately — CDN download + Claude Vision can take 3–6 s
+  await sendAck(phone, '📸 Checking out what you sent...');
 
   // Download from WhatsApp CDN
   let imageBuffer: Buffer;
@@ -1163,6 +1287,113 @@ export async function handleVendorProductPhoto(
     data: { collectedData: newData as unknown as PrismaJson },
   });
   await showPendingConfirmation(phone, [product], data.businessType);
+}
+
+/**
+ * Handles an inbound document message from a vendor in the ADDING_PRODUCTS step.
+ * Called by the router when productInputMode === 'sheet' (or not yet set).
+ *
+ * Flow:
+ *   1. Send immediate ack (file parsing takes 1–3 s)
+ *   2. Download from Meta CDN
+ *   3. Parse: xlsx/xls → convert to CSV; csv → parse directly
+ *   4. Show same preview + confirm/edit/cancel flow as Google Sheets import
+ */
+export async function handleVendorDocument(
+  phone: string,
+  mediaId: string,
+  fileName: string,
+  mimeType: string,
+  _vendor: Vendor,
+  session: VendorSetupSession,
+): Promise<void> {
+  const data = (session.collectedData as unknown as CollectedData) ?? { history: [] };
+
+  // Acknowledge immediately — CDN download + parsing can take 1–3 s
+  await sendAck(phone, '📊 Got your file! Give me a moment to go through it...');
+
+  // 1. Download from Meta CDN
+  let fileBuffer: Buffer;
+  try {
+    fileBuffer = await downloadMediaBuffer(mediaId);
+  } catch (err) {
+    logger.error('Vendor document download failed', { err, phone: maskPhone(phone) });
+    await messageQueue.add({
+      to: phone,
+      message: `😅 I couldn't download that file. Please try uploading it again.`,
+    });
+    return;
+  }
+
+  // 2. Parse file based on type
+  let products: ProductInput[];
+  try {
+    const isExcel =
+      /application\/vnd\.(ms-excel|openxmlformats-officedocument\.spreadsheetml)/.test(mimeType) ||
+      /\.(xlsx?)$/i.test(fileName);
+    const isCsv = mimeType === 'text/csv' || /\.csv$/i.test(fileName);
+
+    let csvText: string;
+    if (isExcel) {
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      csvText = XLSX.utils.sheet_to_csv(firstSheet);
+    } else if (isCsv) {
+      csvText = fileBuffer.toString('utf-8');
+    } else {
+      await messageQueue.add({
+        to: phone,
+        message:
+          `That file format isn't supported 😊\n\n` +
+          `Please upload an *Excel (.xlsx)* or *CSV* file, ` +
+          `or paste a *Google Sheets link* instead.`,
+      });
+      return;
+    }
+
+    products = parseCsvToProducts(csvText, data.businessType);
+  } catch (err) {
+    logger.error('Vendor document parse failed', { err, phone: maskPhone(phone), fileName });
+    await messageQueue.add({
+      to: phone,
+      message:
+        `I had trouble reading that file. Make sure it has columns for *Name, Price, and Category*, ` +
+        `then try uploading again. 😊`,
+    });
+    return;
+  }
+
+  if (products.length === 0) {
+    await messageQueue.add({
+      to: phone,
+      message:
+        `I couldn't find any products in that file. Make sure it has columns for ` +
+        `*Name, Price, and Category*.\n\n` +
+        `Column headers can be anything containing those words (e.g. "Product Name", "Selling Price"). 😊`,
+    });
+    return;
+  }
+
+  const enrichedProducts = await enrichBooksWithMetadata(products);
+  const newData: CollectedData = {
+    ...data,
+    productInputMode: 'sheet',          // mark as sheet mode for subsequent message routing
+    pendingProducts: enrichedProducts,
+    pendingIsDone: true,
+    pendingImportSourceUrl: '',         // empty = file upload (no URL to re-fetch)
+    pendingImportAwaitingEdit: undefined,
+  };
+  await prisma.vendorSetupSession.update({
+    where: { id: session.id },
+    data: { collectedData: newData as unknown as PrismaJson },
+  });
+
+  logger.info('Document import: extracted products', {
+    phone: maskPhone(phone),
+    count: enrichedProducts.length,
+    fileName,
+  });
+  await showSheetImportPreview(phone, enrichedProducts, data.businessType);
 }
 
 async function advanceToPaymentSetup(

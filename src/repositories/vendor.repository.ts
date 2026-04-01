@@ -1,9 +1,16 @@
 /**
  * Vendor repository — the only place that queries the vendors table.
+ * Hot-path reads (findById, findByWhatsAppNumber) are Redis-cached for 10 minutes.
+ * Cache is invalidated on any update to keep data fresh.
  */
 import { Vendor } from '@prisma/client';
 import { prisma } from './prisma';
+import { redis } from '../utils/redis';
 import { UpdateVendorDto } from '../types';
+
+const VENDOR_CACHE_TTL = 600; // 10 minutes
+const vKey  = (id: string)    => `vendor:id:${id}`;
+const vwKey = (phone: string) => `vendor:wa:${phone}`;
 
 export const vendorRepository = {
   async create(data: {
@@ -17,11 +24,19 @@ export const vendorRepository = {
   },
 
   async findById(id: string): Promise<Vendor | null> {
-    return prisma.vendor.findUnique({ where: { id } });
+    const cached = await redis.get(vKey(id));
+    if (cached) return JSON.parse(cached) as Vendor;
+    const vendor = await prisma.vendor.findUnique({ where: { id } });
+    if (vendor) await redis.setex(vKey(id), VENDOR_CACHE_TTL, JSON.stringify(vendor));
+    return vendor;
   },
 
   async findByWhatsAppNumber(whatsappNumber: string): Promise<Vendor | null> {
-    return prisma.vendor.findUnique({ where: { whatsappNumber } });
+    const cached = await redis.get(vwKey(whatsappNumber));
+    if (cached) return JSON.parse(cached) as Vendor;
+    const vendor = await prisma.vendor.findUnique({ where: { whatsappNumber } });
+    if (vendor) await redis.setex(vwKey(whatsappNumber), VENDOR_CACHE_TTL, JSON.stringify(vendor));
+    return vendor;
   },
 
   async findByOwnerPhone(ownerPhone: string): Promise<Vendor | null> {
@@ -35,7 +50,12 @@ export const vendorRepository = {
   },
 
   async update(id: string, data: UpdateVendorDto): Promise<Vendor> {
-    return prisma.vendor.update({ where: { id }, data });
+    const vendor = await prisma.vendor.update({ where: { id }, data });
+    // Invalidate all cache keys for this vendor
+    const keys = [vKey(id), vwKey(vendor.whatsappNumber)];
+    if (vendor.ownerPhone) keys.push(vwKey(vendor.ownerPhone));
+    await redis.del(...keys);
+    return vendor;
   },
 
   async existsByWhatsAppNumber(whatsappNumber: string): Promise<boolean> {

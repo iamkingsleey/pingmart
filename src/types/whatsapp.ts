@@ -46,6 +46,8 @@ export interface WhatsAppMessage {
   audio?: { id: string; mime_type?: string };
   /** Present when type === 'image' */
   image?: { id: string; mime_type?: string; caption?: string };
+  /** Present when type === 'document' — e.g. .xlsx, .csv files uploaded by vendor */
+  document?: { id: string; filename?: string; mime_type?: string };
 }
 
 export interface WhatsAppInteractiveReply {

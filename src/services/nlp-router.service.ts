@@ -23,6 +23,7 @@ export async function normaliseMessage(
   rawMessage: string,
   products: Product[],
   sessionState: string,
+  onBeforeLlm?: () => Promise<void>,
 ): Promise<NormalisedMessage> {
   // Normalize internal whitespace so "order  status" matches "ORDER STATUS"
   const upper = rawMessage.trim().toUpperCase().replace(/\s+/g, ' ');
@@ -52,6 +53,8 @@ export async function normaliseMessage(
   }
 
   const productNames = products.map((p) => p.name);
+  // Notify caller we're about to make the slow LLM call — lets them send an ack message
+  if (onBeforeLlm) await onBeforeLlm();
   const intent = await interpretMessage(rawMessage, productNames, sessionState);
 
   switch (intent.intent) {

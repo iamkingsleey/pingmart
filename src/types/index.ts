@@ -341,6 +341,12 @@ export interface IncomingMessageJob {
   imageMediaId?: string;
   /** Caption attached to the image, if any. */
   imageCaption?: string;
+  /** Present when the incoming message is a document (type === 'document'). */
+  documentMediaId?: string;
+  /** Original filename from WhatsApp (e.g. "products.xlsx"). */
+  documentFileName?: string;
+  /** MIME type reported by WhatsApp (e.g. "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"). */
+  documentMimeType?: string;
 }
 
 export interface PaymentProcessingJob {

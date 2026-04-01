@@ -132,8 +132,24 @@ async function routeIncomingMessage(
     });
     return;
 
+  } else if (message.type === 'document' && message.document?.id) {
+    // Queue document messages so the router can route them to the spreadsheet handler:
+    //  • Vendors in ADDING_PRODUCTS (sheet mode) → parse Excel/CSV → preview → import
+    //  • Everyone else → "unsupported file" nudge (handled inside the router)
+    await incomingMessageQueue.add({
+      from,
+      message: '',                            // no text — documentMediaId carries the payload
+      vendorWhatsAppNumber,
+      messageId: message.id,
+      timestamp: message.timestamp,
+      documentMediaId:  message.document.id,
+      documentFileName: message.document.filename  ?? '',
+      documentMimeType: message.document.mime_type ?? '',
+    });
+    return;
+
   } else {
-    // Stickers, documents, contacts, location, and anything else
+    // Stickers, contacts, location, and anything else
     const customer = await customerRepository.findByWhatsAppNumber(from);
     const lang = (customer?.language as Language | undefined) ?? 'en';
     await messageQueue.add({ to: from, message: msgFallback(lang) });

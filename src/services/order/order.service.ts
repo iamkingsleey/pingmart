@@ -67,6 +67,7 @@ import { generatePaystackReference } from '../../utils/crypto';
 import { logger, maskPhone, maskReference } from '../../utils/logger';
 import { messageQueue } from '../../queues/message.queue';
 import { digitalDeliveryQueue } from '../../queues/digitalDelivery.queue';
+import { sendTextMessage } from '../whatsapp/whatsapp.service';
 import { normaliseMessage } from '../nlp-router.service';
 import { generateNotFoundResponse, generateContextAwareAnswer, detectMessageLanguage, getItemNoteHint, extractQuantitiesFromMessage } from '../llm.service';
 import { detectEscalationTrigger, triggerHumanEscalation } from '../escalation.service';
@@ -503,11 +504,27 @@ export async function processIncomingMessage(
       orderMessageCount: (currentData.orderMessageCount ?? 0) + 1,
     };
 
+    // Language-aware acknowledgment messages sent just before the LLM call when
+    // the message isn't a known keyword and pattern-cache misses (slow path only).
+    const NLU_ACK: Record<string, string> = {
+      en:  'Got you — working on it!',
+      pid: 'Abeg wait small, I dey check am 👀',
+      ig:  'Chere obere oge...',
+      yo:  'Jọwọ dúró ìsẹjú kan...',
+      ha:  'Dan Allah jira kaɗan...',
+    };
+
     let messageToProcess = rawMessage;
     let nlpIntent: string | null = null;
     let nlpResult: Awaited<ReturnType<typeof normaliseMessage>> | null = null;
     if (!skipNlpStates.includes(currentState)) {
-      nlpResult = await normaliseMessage(rawMessage, products, currentState);
+      nlpResult = await normaliseMessage(
+        rawMessage,
+        products,
+        currentState,
+        // onBeforeLlm: called only if the LLM is actually invoked (pattern cache miss)
+        () => sendTextMessage(from, NLU_ACK[language] ?? NLU_ACK.en).catch(() => undefined),
+      );
       messageToProcess = nlpResult.text;
       nlpIntent = nlpResult.intent.intent;
 

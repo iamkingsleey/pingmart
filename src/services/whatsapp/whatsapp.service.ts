@@ -95,6 +95,35 @@ export async function sendImageMessage(
   await callWhatsAppAPI(body, to);
 }
 
+/**
+ * Marks an incoming message as read, turning the double-tick blue immediately.
+ * Reduces perceived latency — the sender sees Pingmart has seen their message
+ * even before a response arrives.
+ * Fire-and-forget safe: errors are logged and never rethrown.
+ */
+export async function markMessageRead(messageId: string): Promise<void> {
+  if (!messageId) return;
+  try {
+    const res = await fetch(MESSAGES_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+      }),
+    });
+    if (!res.ok) {
+      logger.warn('markMessageRead API error', { status: res.status });
+    }
+  } catch (err) {
+    logger.warn('markMessageRead failed', { messageId: messageId.slice(-8), err });
+  }
+}
+
 async function callWhatsAppAPI(
   body: SendTextMessageBody | SendInteractiveButtonsBody | SendInteractiveListBody | SendImageMessageBody,
   to: string,
