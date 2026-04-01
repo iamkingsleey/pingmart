@@ -1013,6 +1013,9 @@ export function isStructuredCommand(message: string): boolean {
   if (!trimmed) return true;
   // Numeric list selection
   if (/^\d{1,2}$/.test(trimmed)) return true;
+  // Language selection IDs from the interactive list — these are deterministic
+  // and must never trigger an LLM call (critical path for first-impression latency)
+  if (/^(en|pid|ig|yo|ha)$/i.test(trimmed)) return true;
   // Internal-protocol prefixes
   if (/^(CATEGORY:|BOOK:|SWITCH_LANG:|BUTTON:)/i.test(trimmed)) return true;
   // WhatsApp button IDs: original message is already all-uppercase + underscores/digits

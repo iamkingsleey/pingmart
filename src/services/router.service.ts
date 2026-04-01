@@ -31,6 +31,7 @@ import { startVendorOnboarding, handleVendorOnboarding, handleVendorProductPhoto
 import { handleVendorDashboard } from './vendor-management.service';
 import { handleSupportCustomerMessage, showSupportWelcome } from './support-customer.service';
 import { handleSupportVendorDashboard } from './support-vendor.service';
+import { sendTypingIndicator } from './whatsapp/whatsapp.service';
 import { customerRepository } from '../repositories/customer.repository';
 import { logger, maskPhone } from '../utils/logger';
 import { ConversationState, SessionData } from '../types';
@@ -271,7 +272,7 @@ export async function routeIncomingMessage(
   // ── 2. Pending router-state replies ──────────────────────────────────────
   const routerState = await redis.get(`router:state:${senderPhone}`);
   if (routerState === 'LANG_INIT') {
-    await handleLangInitReply(senderPhone, message);
+    await handleLangInitReply(senderPhone, message, messageId);
     return;
   }
   if (routerState === 'SHOP_OR_SELL') {
@@ -661,9 +662,14 @@ async function showLanguageSelectionScreen(phone: string): Promise<void> {
 /**
  * Handles the reply to the language-selection prompt.
  * Accepts both list row IDs (en, pid, ig, yo, ha) and legacy numeric keys (1-5).
- * Saves the chosen language to the Customer record, then shows "shop or sell?".
+ *
+ * Performance-critical path — this is the first response after the user engages.
+ * Order of operations:
+ *   1. Typing indicator (fire-and-forget, <10ms)
+ *   2. Clear router state + send intent screen in parallel (non-blocking DB)
+ *   3. Persist language to Customer record async (does NOT block the reply)
  */
-async function handleLangInitReply(phone: string, message: string): Promise<void> {
+async function handleLangInitReply(phone: string, message: string, messageId: string): Promise<void> {
   const LANG_MAP: Record<string, Language> = {
     // List row IDs (primary — sent by the interactive list)
     'en': 'en', 'pid': 'pid', 'ig': 'ig', 'yo': 'yo', 'ha': 'ha',
@@ -679,13 +685,30 @@ async function handleLangInitReply(phone: string, message: string): Promise<void
     return;
   }
 
-  // Persist language to Customer record (create if first visit)
-  await customerRepository.findOrCreate(phone);
-  await customerRepository.updateLanguage(phone, lang);
+  const t0 = Date.now();
 
-  // Clear LANG_INIT state and proceed to shop/sell — pass language so screen translates
-  await redis.del(`router:state:${phone}`);
-  await showShopOrSellScreen(phone, lang);
+  // Step 1: typing indicator — immediate, fire-and-forget
+  sendTypingIndicator(messageId).catch(() => {});
+
+  // Step 2: clear LANG_INIT state and send the intent screen — do NOT await DB first
+  await Promise.all([
+    redis.del(`router:state:${phone}`),
+    showShopOrSellScreen(phone, lang),
+  ]);
+
+  logger.info('Language selection → intent screen sent', {
+    from: maskPhone(phone),
+    lang,
+    ms: Date.now() - t0,
+  });
+
+  // Step 3: persist language to Customer record async — never blocks the reply
+  Promise.all([
+    customerRepository.findOrCreate(phone),
+    customerRepository.updateLanguage(phone, lang),
+  ]).catch((err) =>
+    logger.error('handleLangInitReply: language persist failed', { from: maskPhone(phone), err }),
+  );
 }
 
 // ─── Intent selection translations (3-option screen) ─────────────────────────

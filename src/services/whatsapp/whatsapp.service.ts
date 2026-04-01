@@ -96,6 +96,31 @@ export async function sendImageMessage(
 }
 
 /**
+ * Sends a "typing..." indicator to the user, showing the bot is preparing a reply.
+ * Must be sent immediately after receiving a message for best UX.
+ * Fire-and-forget safe: errors are silently swallowed.
+ */
+export async function sendTypingIndicator(messageId: string): Promise<void> {
+  if (!messageId) return;
+  try {
+    await fetch(MESSAGES_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'typing',
+        message_id: messageId,
+      }),
+    });
+  } catch {
+    // Typing indicator is best-effort — never block or throw
+  }
+}
+
+/**
  * Marks an incoming message as read, turning the double-tick blue immediately.
  * Reduces perceived latency — the sender sees Pingmart has seen their message
  * even before a response arrives.
