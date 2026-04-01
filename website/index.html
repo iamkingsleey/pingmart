@@ -44,6 +44,7 @@
       padding: 32px 16px;
     }
 
+    /* ── Card ── */
     .card {
       width: 100%;
       max-width: 440px;
@@ -60,6 +61,7 @@
       .card { padding: 36px 22px; }
     }
 
+    /* ── Badge ── */
     .badge {
       display: inline-flex;
       align-items: center;
@@ -88,6 +90,7 @@
       50%       { opacity: 0.35; }
     }
 
+    /* ── Brand ── */
     .brand {
       display: flex;
       align-items: center;
@@ -120,6 +123,7 @@
       margin-bottom: 36px;
     }
 
+    /* ── Form groups ── */
     .form-group { margin-bottom: 18px; }
 
     label {
@@ -130,6 +134,7 @@
       margin-bottom: 7px;
     }
 
+    /* ── Inputs — dark in ALL states including filled ── */
     input {
       width: 100%;
       height: 46px;
@@ -139,23 +144,103 @@
       padding: 0 14px;
       font-size: 0.9375rem;
       font-family: inherit;
-      color: var(--text-primary);
+      color: #ffffff;
       outline: none;
       transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      /* Prevent browsers overriding background on filled state */
+      -webkit-text-fill-color: #ffffff;
     }
 
-    input::placeholder { color: var(--text-muted); }
+    input::placeholder {
+      color: var(--text-muted);
+      -webkit-text-fill-color: var(--text-muted);
+    }
 
     input:focus {
-      border-color: var(--text-secondary);
+      border-color: #ffffff;
       box-shadow: 0 0 0 3px var(--focus-ring);
     }
 
-    input.field-error {
-      border-color: var(--error);
-      box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.1);
+    /* Chrome autofill override — keeps dark background */
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus,
+    input:-webkit-autofill:active {
+      -webkit-box-shadow: 0 0 0 1000px #0d1117 inset !important;
+      -webkit-text-fill-color: #ffffff !important;
+      transition: background-color 9999s ease-in-out 0s;
     }
 
+    input.field-error {
+      border-color: var(--error) !important;
+      box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.1) !important;
+    }
+
+    /* ── Inline field error message ── */
+    .field-msg {
+      display: none;
+      font-size: 0.75rem;
+      color: var(--error);
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+
+    .field-msg.visible { display: block; }
+
+    /* ── Phone row: dial selector + number input side by side ── */
+    .phone-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .dial-wrap {
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .dial-select {
+      height: 46px;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 28px 0 10px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      color: #ffffff;
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      width: 100px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .dial-select:focus {
+      border-color: #ffffff;
+      box-shadow: 0 0 0 3px var(--focus-ring);
+    }
+
+    /* Custom chevron arrow for the select */
+    .dial-wrap::after {
+      content: '';
+      position: absolute;
+      right: 9px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--text-muted);
+      pointer-events: none;
+    }
+
+    .phone-row input {
+      flex: 1;
+      min-width: 0;
+    }
+
+    /* ── Submit button ── */
     .submit-btn {
       width: 100%;
       height: 48px;
@@ -183,6 +268,7 @@
     .submit-btn:active:not(:disabled) { transform: translateY(0); }
     .submit-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
+    /* ── Spinner ── */
     .spinner {
       width: 17px;
       height: 17px;
@@ -195,6 +281,7 @@
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* ── Submission error banner ── */
     .error-banner {
       display: none;
       background: var(--error-dim);
@@ -214,6 +301,7 @@
       text-underline-offset: 2px;
     }
 
+    /* ── Divider + footnote ── */
     .divider {
       height: 1px;
       background: var(--border-subtle);
@@ -240,6 +328,7 @@
       text-underline-offset: 2px;
     }
 
+    /* ── Success state ── */
     .success {
       display: none;
       text-align: center;
@@ -280,6 +369,7 @@
     }
   </style>
 </head>
+
 <body>
   <div class="card">
 
@@ -303,25 +393,44 @@
     <div id="form-wrap">
       <form id="signup-form" novalidate>
 
+        <!-- Full Name -->
         <div class="form-group">
           <label for="name">Full Name</label>
           <input type="text" id="name" name="name"
             placeholder="Chukwuemeka Obi"
-            autocomplete="name" required>
+            autocomplete="name">
+          <p class="field-msg" id="name-msg"></p>
         </div>
 
+        <!-- Phone Number with dial code -->
         <div class="form-group">
           <label for="phone">Phone Number</label>
-          <input type="tel" id="phone" name="phone"
-            placeholder="+234 801 234 5678"
-            autocomplete="tel" required>
+          <div class="phone-row">
+            <div class="dial-wrap">
+              <select id="dial-code" class="dial-select" aria-label="Country dial code">
+                <option value="+234" selected>🇳🇬 +234</option>
+                <option value="+233">🇬🇭 +233</option>
+                <option value="+254">🇰🇪 +254</option>
+                <option value="+27">🇿🇦 +27</option>
+                <option value="+44">🇬🇧 +44</option>
+                <option value="+1">🇺🇸 +1</option>
+              </select>
+            </div>
+            <input type="tel" id="phone" name="phone"
+              placeholder="8068644020"
+              autocomplete="tel-national"
+              inputmode="numeric">
+          </div>
+          <p class="field-msg" id="phone-msg"></p>
         </div>
 
+        <!-- Email -->
         <div class="form-group">
           <label for="email">Email Address</label>
           <input type="email" id="email" name="email"
             placeholder="you@example.com"
-            autocomplete="email" required>
+            autocomplete="email">
+          <p class="field-msg" id="email-msg"></p>
         </div>
 
         <button type="submit" class="submit-btn" id="submit-btn">
@@ -353,6 +462,148 @@
 
   </div>
 
-  <script src="/app.js"></script>
+  <script>
+    (function () {
+      // Replace with your Google Apps Script web app URL
+      var WEBHOOK_URL = 'PASTE_YOUR_APPS_SCRIPT_URL_HERE';
+
+      var form      = document.getElementById('signup-form');
+      var btn       = document.getElementById('submit-btn');
+      var errBanner = document.getElementById('error-banner');
+      var formWrap  = document.getElementById('form-wrap');
+      var successEl = document.getElementById('success-state');
+
+      /* ── Digits-only enforcement on phone field ── */
+      document.getElementById('phone').addEventListener('input', function () {
+        this.value = this.value.replace(/\D/g, '');
+      });
+
+      /* ── Clear field error on re-focus ── */
+      ['name', 'phone', 'email'].forEach(function (id) {
+        var el  = document.getElementById(id);
+        var msg = document.getElementById(id + '-msg');
+        el.addEventListener('focus', function () {
+          el.classList.remove('field-error');
+          if (msg) { msg.textContent = ''; msg.classList.remove('visible'); }
+          errBanner.style.display = 'none';
+        });
+      });
+
+      /* ── Inline error helpers ── */
+      function fieldErr(id, text) {
+        var el  = document.getElementById(id);
+        var msg = document.getElementById(id + '-msg');
+        el.classList.add('field-error');
+        if (msg) { msg.textContent = text; msg.classList.add('visible'); }
+      }
+
+      function clearFieldErr(id) {
+        var el  = document.getElementById(id);
+        var msg = document.getElementById(id + '-msg');
+        el.classList.remove('field-error');
+        if (msg) { msg.textContent = ''; msg.classList.remove('visible'); }
+      }
+
+      function clearAllErrors() {
+        ['name', 'phone', 'email'].forEach(clearFieldErr);
+        errBanner.style.display = 'none';
+      }
+
+      /* ── Validation ── */
+      function validate(name, phone, email) {
+        var ok = true;
+
+        // Full Name: min 2 chars, no digits
+        var trimName = name.trim();
+        if (trimName.length < 2) {
+          fieldErr('name', 'Please enter your full name (at least 2 characters).');
+          ok = false;
+        } else if (/\d/.test(trimName)) {
+          fieldErr('name', 'Name should not contain numbers.');
+          ok = false;
+        } else {
+          clearFieldErr('name');
+        }
+
+        // Phone: digits only, min 7 after dial code
+        var digits = phone.replace(/\D/g, '');
+        if (digits.length < 7) {
+          fieldErr('phone', 'Please enter at least 7 digits.');
+          ok = false;
+        } else {
+          clearFieldErr('phone');
+        }
+
+        // Email: must contain @ and a valid-looking domain
+        var trimEmail = email.trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimEmail)) {
+          fieldErr('email', 'Please enter a valid email address.');
+          ok = false;
+        } else {
+          clearFieldErr('email');
+        }
+
+        return ok;
+      }
+
+      /* ── Loading state ── */
+      function setLoading(on) {
+        btn.disabled = on;
+        btn.innerHTML = on
+          ? '<span class="spinner"></span> Submitting\u2026'
+          : 'Join Early Testers';
+      }
+
+      /* ── Submit ── */
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        clearAllErrors();
+
+        var name     = document.getElementById('name').value;
+        var phone    = document.getElementById('phone').value;
+        var dialCode = document.getElementById('dial-code').value;
+        var email    = document.getElementById('email').value;
+
+        if (!validate(name, phone, email)) return;
+
+        setLoading(true);
+
+        var fullPhone = dialCode + ' ' + phone.trim();
+        var payload   = JSON.stringify({
+          name:      name.trim(),
+          phone:     fullPhone,
+          email:     email.trim().toLowerCase(),
+          timestamp: new Date().toISOString(),
+        });
+
+        console.log('[Pingmart] Submitting to webhook…');
+
+        // POST directly to Google Apps Script.
+        // mode:'no-cors' avoids preflight — response will be opaque (unreadable)
+        // but the sheet write still happens server-side.
+        fetch(WEBHOOK_URL, {
+          method:  'POST',
+          mode:    'no-cors',
+          headers: { 'Content-Type': 'text/plain' },
+          body:    payload,
+        })
+          .then(function (res) {
+            console.log('[Pingmart] Fetch completed, type:', res.type);
+            // With no-cors the response is always opaque (type === 'opaque').
+            // A network error would have thrown above, so we treat completion as success.
+            formWrap.style.display  = 'none';
+            successEl.style.display = 'block';
+          })
+          .catch(function (err) {
+            console.error('[Pingmart] Fetch failed:', err);
+            errBanner.innerHTML =
+              'Something went wrong. Please email us directly at ' +
+              '<a href="mailto:hello@pingmart.io">hello@pingmart.io</a>';
+            errBanner.style.display = 'block';
+            setLoading(false);
+          });
+      });
+    })();
+  </script>
 </body>
 </html>
