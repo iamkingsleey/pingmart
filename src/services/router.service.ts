@@ -524,7 +524,7 @@ const SHOP_OR_SELL_STRINGS: Record<Language, {
       `Once you tap their link, you'll land directly in their store. 🛍️`,
   },
   pid: {
-    question:     `Wetin you wan do for Pingmart today?`,
+    question:     `Wetin carry you come Pingmart?`,
     sellLabel:    `🏪 I wan sell`,
     shopLabel:    `🛍️ I wan shop`,
     shopRedirect:
