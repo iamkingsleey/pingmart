@@ -70,7 +70,10 @@ app.post('/submit', async (req, res) => {
       redirect: 'follow', // Google Apps Script returns 302 on POST; follow it
       signal: AbortSignal.timeout(10_000),
     });
-    if (!upstream.ok) throw new Error(`Upstream ${upstream.status}`);
+    if (!upstream.ok) {
+      const body = await upstream.text().catch(() => '');
+      throw new Error(`Upstream ${upstream.status}: ${body.slice(0, 120)}`);
+    }
     return res.json({ ok: true });
   } catch (err) {
     logger.error('[/submit] Webhook forward failed', { err: String(err) });
