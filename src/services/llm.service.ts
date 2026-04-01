@@ -19,6 +19,15 @@ import {
   CONFIDENCE_HIGH,
   CONFIDENCE_MEDIUM,
 } from './learning.service';
+import { redis } from '../utils/redis';
+import {
+  ConversationHistoryEntry,
+  formatHistoryForLLM,
+} from '../utils/conversationHistory';
+import {
+  LLM_CONFIDENCE_THRESHOLD as _LLM_CONFIDENCE_THRESHOLD,
+  INTENT_CACHE_TTL_SECS,
+} from '../config/constants';
 
 const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
@@ -939,5 +948,230 @@ export async function extractQuantitiesFromMessage(
     return { type: 'unknown' };
   } catch {
     return { type: 'unknown' };
+  }
+}
+
+// ─── Universal Intent Classifier ─────────────────────────────────────────────
+
+/**
+ * Context about the current session, passed to classifyIntent().
+ * All fields optional — supply as much as is known at call time.
+ */
+export interface IntentContext {
+  /** 'vendor_onboarding' | 'vendor_dashboard' | 'customer' | 'support_customer' | 'unknown' */
+  role?: string;
+  /** Current onboarding step or ConversationState */
+  step?: string;
+  /** 'onboarding' | 'shopping' | 'support' | 'dashboard' */
+  flow?: string;
+  /** Session / customer language code */
+  language?: string;
+  /** Vendor business name */
+  storeName?: string;
+  /** Active cart contents */
+  cartItems?: Array<{ name: string; qty: number }>;
+  /** Last N conversation exchanges for context */
+  history?: ConversationHistoryEntry[];
+}
+
+/**
+ * Structured result from classifyIntent().
+ * Every field is always present; `suggestedReply` may be '' for structured commands.
+ */
+export interface IntentClassification {
+  /** Canonical intent token. Examples: 'confirm', 'deny', 'pause', 'question',
+   *  'confusion', 'frustration', 'greeting', 'off_topic', 'order', 'menu',
+   *  'checkout', 'cancel', 'help', 'in_flow', 'unknown' */
+  intent: string;
+  /** 0.0–1.0 confidence score */
+  confidence: number;
+  /** Any data extracted from the message (product name, price, duration, etc.) */
+  extractedData: Record<string, unknown>;
+  /**
+   * LLM-drafted reply in session.language:
+   *   – acknowledges what the user said
+   *   – answers any question raised
+   *   – re-prompts the current step naturally (never copy-pastes the same prompt)
+   */
+  suggestedReply: string;
+  /** true = bot should proceed with the current step after sending suggestedReply
+   *  false = this message fully resolves / exits the current step */
+  continueFlow: boolean;
+}
+
+/**
+ * Set of patterns that indicate a structured command (button tap, keyword, numeric
+ * selection) that does not need LLM classification.
+ *
+ * Rules:
+ *  • All-uppercase with underscores → WhatsApp button ID (CONFIRM_PRODUCTS, SELL_ON_PINGMART…)
+ *  • 1–2 digit number → numeric list selection
+ *  • Known prefixes → internal command protocol (CATEGORY:, BOOK:, SWITCH_LANG:, BUTTON:)
+ */
+export function isStructuredCommand(message: string): boolean {
+  const trimmed = message.trim();
+  if (!trimmed) return true;
+  // Numeric list selection
+  if (/^\d{1,2}$/.test(trimmed)) return true;
+  // Internal-protocol prefixes
+  if (/^(CATEGORY:|BOOK:|SWITCH_LANG:|BUTTON:)/i.test(trimmed)) return true;
+  // WhatsApp button IDs: original message is already all-uppercase + underscores/digits
+  // (natural language typed by users will always contain at least one lowercase letter)
+  if (trimmed === trimmed.toUpperCase() && /^[A-Z][A-Z_0-9]{2,35}$/.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * Classifies every incoming natural-language message and drafts a contextual reply.
+ *
+ * Uses Claude Haiku (fast + cheap). Results are cached in Redis for
+ * INTENT_CACHE_TTL_SECS seconds to handle duplicate WhatsApp deliveries.
+ *
+ * @param message  Raw text from the user
+ * @param context  Current session state (role, step, language, cart, history)
+ */
+export async function classifyIntent(
+  message: string,
+  context: IntentContext = {},
+): Promise<IntentClassification> {
+  const FALLBACK: IntentClassification = {
+    intent: 'unknown',
+    confidence: 0.5,
+    extractedData: {},
+    suggestedReply: '',
+    continueFlow: true,
+  };
+
+  // Structured commands bypass classification — they are deterministic
+  if (isStructuredCommand(message)) {
+    return { ...FALLBACK, intent: 'structured_command', confidence: 1.0 };
+  }
+
+  // ── Redis cache (dedup identical messages within INTENT_CACHE_TTL_SECS) ─────
+  const cacheKey = `intent:cls:${Buffer.from(
+    (context.role ?? '') + ':' + (context.step ?? '') + ':' + message.slice(0, 120).toLowerCase(),
+  ).toString('base64url').slice(0, 64)}`;
+
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return JSON.parse(cached) as IntentClassification;
+    }
+  } catch {
+    // Cache miss — proceed to LLM
+  }
+
+  // ── Build prompt ──────────────────────────────────────────────────────────────
+  const lang = context.language ?? 'en';
+  const cartText = context.cartItems?.length
+    ? context.cartItems.map((i) => `${i.qty}× ${i.name}`).join(', ')
+    : 'empty';
+  const historyText = context.history?.length
+    ? `\nRecent conversation:\n${formatHistoryForLLM(context.history)}\n`
+    : '';
+
+  const systemPrompt =
+    `You are the intent classifier for Pingmart — a Nigerian WhatsApp commerce platform.\n` +
+    `\n` +
+    `Current session:\n` +
+    `  role:     ${context.role ?? 'unknown'}\n` +
+    `  flow:     ${context.flow ?? 'unknown'}\n` +
+    `  step:     ${context.step ?? 'unknown'}\n` +
+    `  language: ${lang}\n` +
+    `  store:    ${context.storeName ?? 'Pingmart'}\n` +
+    `  cart:     ${cartText}\n` +
+    historyText +
+    `\n` +
+    `Classify the user message and draft a warm, context-aware reply.\n` +
+    `Return ONLY valid JSON — no markdown, no explanation:\n` +
+    `{\n` +
+    `  "intent": "<one of: in_flow | confirm | deny | pause | question | confusion |\n` +
+    `              frustration | greeting | off_topic | order | menu | checkout |\n` +
+    `              cancel | help | add_product | edit_product | language_switch | unknown>",\n` +
+    `  "confidence": <0.0-1.0>,\n` +
+    `  "extractedData": { <any key/value data extracted from the message> },\n` +
+    `  "suggestedReply": "<reply in '${lang}': acknowledge what they said, answer any question,\n` +
+    `                      then re-prompt the current step naturally — never copy-paste the\n` +
+    `                      same prompt verbatim. Sound warm and human, not robotic.>",\n` +
+    `  "continueFlow": <true if the bot should continue the current step after replying;\n` +
+    `                   false if this message fully resolves or exits the step>\n` +
+    `}\n` +
+    `\n` +
+    `Rules:\n` +
+    `- Nigerian Pidgin, Yoruba, Igbo, Hausa are common — understand and reply in the same language\n` +
+    `- in_flow: the message IS a valid answer for the current step (even if poorly formatted)\n` +
+    `- confirm/deny: clear yes/no responses to a question the bot just asked\n` +
+    `- pause: vendor wants to pause and come back later (set continueFlow=false)\n` +
+    `- frustration/confusion: acknowledge empathetically, then simplify the re-prompt\n` +
+    `- off_topic/question: answer if possible, then re-prompt step\n` +
+    `- confidence: 1.0=certain, 0.75=likely, 0.5=unsure, 0.0=guessing\n` +
+    `- extractedData: include product names, prices, quantities, durations, etc.\n` +
+    `- Never say "I don't understand" coldly — always respond like a friendly human assistant\n` +
+    `- continueFlow=false for: pause, confirm that completes a step, deny, cancel, checkout`;
+
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 350,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: message }],
+    });
+
+    const block = response.content[0];
+    if (block.type !== 'text') return FALLBACK;
+
+    const raw = block.text.trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+
+    const parsed = JSON.parse(raw) as Partial<IntentClassification>;
+    const result: IntentClassification = {
+      intent:        typeof parsed.intent      === 'string' ? parsed.intent : 'unknown',
+      confidence:    typeof parsed.confidence  === 'number'
+        ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5,
+      extractedData: typeof parsed.extractedData === 'object' && parsed.extractedData !== null
+        ? (parsed.extractedData as Record<string, unknown>) : {},
+      suggestedReply: typeof parsed.suggestedReply === 'string' ? parsed.suggestedReply : '',
+      continueFlow:  parsed.continueFlow !== false,
+    };
+
+    // Cache result
+    await redis.setex(cacheKey, INTENT_CACHE_TTL_SECS, JSON.stringify(result)).catch(() => {});
+
+    logger.debug('classifyIntent result', {
+      message: message.slice(0, 60),
+      intent: result.intent,
+      confidence: result.confidence,
+      role: context.role,
+      step: context.step,
+    });
+
+    return result;
+
+  } catch (err) {
+    logger.error('classifyIntent failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return FALLBACK;
+  }
+}
+
+/**
+ * Retrieves the most recent cached classifyIntent() result for a phone number.
+ * Returns null if no cached result exists (expired or never classified).
+ *
+ * Handlers can call this instead of running a second LLM classification for
+ * off-script replies — the router already ran it for this message.
+ */
+export async function getLastIntentClassification(
+  phone: string,
+): Promise<IntentClassification | null> {
+  try {
+    const raw = await redis.get(`intent:last:${phone}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as IntentClassification;
+  } catch {
+    return null;
   }
 }

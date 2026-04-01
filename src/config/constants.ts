@@ -65,3 +65,24 @@ export const MAX_DIGITAL_FILE_SIZE_BYTES = 100 * 1024 * 1024;
  * Raise to be more conservative; lower to catch more edge cases.
  */
 export const OFFSCRIPT_CONFIDENCE_THRESHOLD = 0.65;
+
+// ─── LLM Pipeline ─────────────────────────────────────────────────────────────
+
+/**
+ * Minimum confidence (0.0–1.0) for classifyIntent() to act on a result.
+ * Below this threshold with intent='unknown', the bot asks a clarifying question
+ * rather than guessing. Raise to be more conservative.
+ */
+export const LLM_CONFIDENCE_THRESHOLD = 0.75;
+
+/**
+ * Number of back-and-forth exchanges (user + bot) to keep in conversation history.
+ * 5 exchanges = 10 stored messages max per user session.
+ */
+export const CONVERSATION_HISTORY_MAX_EXCHANGES = 5;
+
+/**
+ * How long (seconds) to cache a classifyIntent() result in Redis.
+ * Deduplicates rapid-fire identical messages (e.g. WhatsApp delivery retries).
+ */
+export const INTENT_CACHE_TTL_SECS = 30;

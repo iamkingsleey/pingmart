@@ -37,6 +37,16 @@ import { ConversationState, SessionData } from '../types';
 import { formatNaira } from '../utils/formatters';
 import { Language } from '../i18n';
 import { resolveStoreVocabulary, applyVocabulary } from '../utils/store-vocabulary';
+import { appendToHistory, getHistory } from '../utils/conversationHistory';
+import {
+  classifyIntent,
+  isStructuredCommand,
+  IntentContext,
+} from './llm.service';
+import {
+  LLM_CONFIDENCE_THRESHOLD,
+  INTENT_CACHE_TTL_SECS,
+} from '../config/constants';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -47,6 +57,148 @@ const ROUTER_STATE_TTL_SECS = 30 * 60; // 30 minutes
 // Must START with a letter or digit (not underscore) to avoid false matches on
 // keyboard noise. Pure short words like "OK" or "NO" fall below the 4-char floor.
 const STORE_CODE_REGEX = /^[A-Z0-9][A-Z0-9_]{3,19}$/;
+
+// ─── Clarifying questions (low-confidence fallback) ───────────────────────────
+
+const CLARIFYING_QUESTIONS: Record<Language, string> = {
+  en:  `I want to make sure I understand — could you say that a different way? 😊`,
+  pid: `Help me understand — wetin exactly you mean? 🙂`,
+  ig:  `Biko, gwa m ọzọ — ọ bụ gịnị ka ị chọrọ?`,
+  yo:  `Jọwọ sọ fún mi lẹẹkansi — kini gangan o tumọ?`,
+  ha:  `Don Allah, sake faɗa — menene ainihin kake nufi?`,
+};
+
+/**
+ * Builds a lightweight IntentContext for the pipeline by making the minimum
+ * number of DB/Redis reads necessary to establish role, step, and language.
+ * Runs in parallel where possible; fails safe to { role: 'unknown' }.
+ */
+async function buildIntentContext(phone: string): Promise<IntentContext> {
+  try {
+    const [routerState, vendorLang] = await Promise.all([
+      redis.get(`router:state:${phone}`),
+      redis.get(`vendor:lang:${phone}`),
+    ]);
+
+    // Is this a registered vendor?
+    const vendor = await prisma.vendor.findUnique({
+      where: { ownerPhone: phone },
+      select: { id: true, businessName: true, mode: true },
+    });
+
+    if (vendor) {
+      const setupSession = await prisma.vendorSetupSession.findUnique({
+        where: { vendorId: vendor.id },
+        select: { step: true, completedAt: true, collectedData: true },
+      });
+      if (setupSession && !setupSession.completedAt) {
+        return {
+          role:      'vendor_onboarding',
+          step:      setupSession.step ?? undefined,
+          flow:      'onboarding',
+          language:  vendorLang ?? 'en',
+          storeName: (setupSession.collectedData as Record<string, unknown> | null)
+            ?.businessName as string | undefined,
+        };
+      }
+      return {
+        role:      (vendor as any).mode === 'SUPPORT' ? 'vendor_support_dashboard' : 'vendor_dashboard',
+        flow:      'dashboard',
+        language:  vendorLang ?? 'en',
+        storeName: vendor.businessName,
+      };
+    }
+
+    // Is there an active customer session?
+    const activeSession = await prisma.conversationSession.findFirst({
+      where:   { whatsappNumber: phone, expiresAt: { gt: new Date() } },
+      orderBy: { updatedAt: 'desc' },
+      select:  { state: true, sessionData: true, vendorId: true },
+    });
+
+    if (activeSession) {
+      const customer = await customerRepository.findByWhatsAppNumber(phone);
+      const data = (activeSession.sessionData ?? {}) as unknown as SessionData;
+      const sessionVendor = await vendorRepository.findById(activeSession.vendorId);
+      return {
+        role:      (sessionVendor as any)?.mode === 'SUPPORT' ? 'support_customer' : 'customer',
+        step:      activeSession.state,
+        flow:      (sessionVendor as any)?.mode === 'SUPPORT' ? 'support' : 'shopping',
+        language:  (customer?.language as string | undefined) ?? 'en',
+        storeName: sessionVendor?.businessName,
+        cartItems: data.cart?.map((i) => ({ name: i.name, qty: i.quantity })),
+      };
+    }
+
+    // Unknown sender — may be at language selection or shop/sell screen
+    if (routerState === 'LANG_INIT' || routerState === 'SHOP_OR_SELL') {
+      const customer = await customerRepository.findByWhatsAppNumber(phone);
+      return {
+        role:     'onboarding',
+        step:     routerState,
+        flow:     'onboarding',
+        language: (customer?.language as string | undefined) ?? 'en',
+      };
+    }
+
+    return { role: 'unknown', language: 'en' };
+  } catch {
+    return { role: 'unknown', language: 'en' };
+  }
+}
+
+/**
+ * Pipeline Step 4 — LLM intent classification on every natural-language message.
+ *
+ * Returns { shouldContinue: true } in all normal cases.
+ * Returns { shouldContinue: false } only when confidence is below
+ * LLM_CONFIDENCE_THRESHOLD AND intent is 'unknown' — in that case a
+ * clarifying question has already been sent and routing should stop.
+ */
+async function runLLMPipeline(
+  phone: string,
+  message: string,
+): Promise<{ shouldContinue: boolean }> {
+  // Structured commands (button taps, numeric selections) skip classification
+  // but message is still added to history above in routeIncomingMessage.
+  if (isStructuredCommand(message)) {
+    return { shouldContinue: true };
+  }
+
+  // Build context with minimum DB reads
+  const [context, history] = await Promise.all([
+    buildIntentContext(phone),
+    getHistory(phone),
+  ]);
+
+  // Classify intent (Haiku — fast + cheap)
+  const classification = await classifyIntent(message, { ...context, history });
+
+  // Cache so handlers can retrieve the pre-computed result without a second LLM call
+  await redis.setex(
+    `intent:last:${phone}`,
+    INTENT_CACHE_TTL_SECS,
+    JSON.stringify(classification),
+  ).catch(() => {});
+
+  // ── Confidence gate ────────────────────────────────────────────────────────
+  // Only intercept when we genuinely have no idea what the user means.
+  // Confidence < threshold AND intent === 'unknown' = truly ambiguous message.
+  if (
+    classification.confidence < LLM_CONFIDENCE_THRESHOLD &&
+    classification.intent === 'unknown'
+  ) {
+    const lang = (context.language ?? 'en') as Language;
+    const clarification =
+      classification.suggestedReply ||
+      CLARIFYING_QUESTIONS[lang] ||
+      CLARIFYING_QUESTIONS.en;
+    await messageQueue.add({ to: phone, message: clarification });
+    return { shouldContinue: false };
+  }
+
+  return { shouldContinue: true };
+}
 
 // ─── Public Entry Point ───────────────────────────────────────────────────────
 
@@ -107,6 +259,14 @@ export async function routeIncomingMessage(
     await routeDocumentMessage(senderPhone, documentMediaId, documentFileName ?? '', documentMimeType ?? '');
     return;
   }
+
+  // ── Pipeline: history tracking + LLM classification ──────────────────────
+  // Step 1: Record user message in conversation history (all messages, always).
+  // Step 4: Run LLM intent classification on natural-language messages.
+  // Skipped for images/documents (already returned above).
+  await appendToHistory(senderPhone, 'user', message);
+  const pipelineResult = await runLLMPipeline(senderPhone, message);
+  if (!pipelineResult.shouldContinue) return;
 
   // ── 2. Pending router-state replies ──────────────────────────────────────
   const routerState = await redis.get(`router:state:${senderPhone}`);
