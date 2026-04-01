@@ -1,7 +1,7 @@
 /**
  * NLP Router — bridges LLM intent with the existing conversation state machine
  */
-import { interpretMessage, CustomerIntent } from './llm.service';
+import { interpretMessage, CustomerIntent, extractItemSelections } from './llm.service';
 import { Product } from '@prisma/client';
 import { BROWSE_COMMAND_ALIASES } from '../utils/store-vocabulary';
 
@@ -10,12 +10,16 @@ export interface NormalisedMessage {
   intent: CustomerIntent;
 }
 
-// Single digits and common keywords are already in canonical form — skip LLM entirely
+// Single digits and common keywords are already in canonical form — skip LLM entirely.
+// Button reply IDs (CONFIRM_CART, EDIT_CART, etc.) MUST be listed here so they
+// are never transformed by the LLM — the awaitingCartReview handler matches them verbatim.
 const KNOWN_KEYWORDS = new Set([
   'MENU', 'CANCEL', 'STOP', 'QUIT', 'EXIT', 'BACK',
   'CONFIRM', 'CART', 'DONE', 'CHECKOUT', 'CLEAR',
   'BUY', 'YES', 'NO', 'SKIP',
   'HELP', 'STATUS', 'ORDER STATUS',
+  // Cart review button IDs — must pass through unchanged
+  'CONFIRM_CART', 'EDIT_CART',
   '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ]);
 
@@ -49,6 +53,32 @@ export async function normaliseMessage(
         text: `MULTI_SELECT:${nums.join(',')}`,
         intent: { intent: 'UNKNOWN', rawMessage },
       };
+    }
+  }
+
+  // Detect natural-language multi-item-by-number selection:
+  // "I also selected 10 and 14 in addition to 5", "Items 4 and 9 please",
+  // "I wan take number 2, 5 and 8", "Give me 2 of item 3 and 1 of item 7"
+  //
+  // Heuristic: message contains ≥2 distinct numbers in the valid catalogue range.
+  // Pure "1 2 3" is already caught by the regex above; this handles mixed NL.
+  // Only runs when the catalogue has ≥2 products to avoid false positives.
+  if (products.length >= 2) {
+    const allNums = (rawMessage.match(/\b\d{1,2}\b/g) ?? []).map(Number);
+    const inRange   = allNums.filter(n => n >= 1 && n <= products.length);
+    const uniqueInRange = [...new Set(inRange)];
+    if (uniqueInRange.length >= 2) {
+      // Likely a multi-item selection — use LLM to extract items + quantities precisely
+      if (onBeforeLlm) await onBeforeLlm();
+      const selections = await extractItemSelections(rawMessage, products.length);
+      if (selections.length >= 2) {
+        const token = selections.map(s => `${s.itemNumber}:${s.quantity}`).join(',');
+        return {
+          text: `MULTI_SELECT_QTY:${token}`,
+          intent: { intent: 'UNKNOWN', rawMessage },
+        };
+      }
+      // Fewer than 2 items parsed — fall through to standard LLM classification
     }
   }
 

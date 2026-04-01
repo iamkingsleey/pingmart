@@ -731,6 +731,70 @@ export async function processIncomingMessage(
       }
     }
 
+    // ── MULTI_SELECT_QTY — natural-language multi-item with pre-set quantities ──
+    // Produced by extractItemSelections() when the customer references items by
+    // number in a natural-language message (e.g. "I also selected 10 and 14 in
+    // addition to 5"). All items are bulk-added — no per-item quantity loop.
+    if (messageToProcess.startsWith('MULTI_SELECT_QTY:')) {
+      const physicalProducts = products.filter(p => p.productType === 'PHYSICAL');
+      const selections = messageToProcess
+        .slice(17)
+        .split(',')
+        .map(part => {
+          const [numStr, qtyStr] = part.split(':');
+          return { itemNumber: parseInt(numStr ?? '', 10), quantity: parseInt(qtyStr ?? '', 10) };
+        })
+        .filter(s => !isNaN(s.itemNumber) && !isNaN(s.quantity) && s.quantity >= 1);
+
+      const addedLines: string[] = [];
+      const notFoundNums: number[] = [];
+      let cart = [...currentData.cart];
+
+      for (const { itemNumber, quantity } of selections) {
+        const product = physicalProducts[itemNumber - 1];
+        if (!product) {
+          notFoundNums.push(itemNumber);
+          continue;
+        }
+        const existing = cart.find(c => c.productId === product.id);
+        if (existing) {
+          cart = cart.map(c =>
+            c.productId === product.id ? { ...c, quantity: c.quantity + quantity } : c,
+          );
+        } else {
+          cart.push({
+            productId:   product.id,
+            name:        product.name,
+            quantity,
+            unitPrice:   product.price,
+            productType: product.productType as ProductType,
+          });
+        }
+        addedLines.push(`✅ ${quantity}x *${product.name}* — ${formatNaira(quantity * product.price)}`);
+      }
+
+      if (!addedLines.length) {
+        await enqueue(from, t('browsing_invalid', language, { max: String(products.length) }));
+        await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
+        return;
+      }
+
+      const cartTotal = formatNaira(cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0));
+      let response = `🛒 Added to your cart:\n\n${addedLines.join('\n')}`;
+      if (notFoundNums.length) {
+        response +=
+          `\n\n❌ Item${notFoundNums.length > 1 ? 's' : ''} *${notFoundNums.join(', ')}* ` +
+          `not found in the catalogue — skipped.`;
+      }
+      response += `\n\n💰 Cart total: *${cartTotal}*\n\nKeep adding items or type *DONE* to checkout.`;
+
+      const newData: SessionData = { ...currentData, cart, activeOrderType: OrderType.PHYSICAL };
+      await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, newData);
+      await enqueue(from, response);
+      await scheduleSessionTimeout(from, vendor.id, ConversationState.ORDERING, newData);
+      return;
+    }
+
     // ── MULTI_SELECT — comma/space-separated product indices ──────────────────
     if (messageToProcess.startsWith('MULTI_SELECT:')) {
       const indices = messageToProcess.slice(13).split(',').map(Number);
@@ -1030,8 +1094,12 @@ export async function processIncomingMessage(
     }
 
     // ── Cart review responses ─────────────────────────────────────────────────
+    // IMPORTANT: use rawMessage (pre-NLP) not messageToProcess. These are WhatsApp
+    // button reply IDs and must match verbatim. CONFIRM_CART is also in KNOWN_KEYWORDS
+    // so the NLP will never transform it, but the raw check is a belt-and-suspenders
+    // guarantee against any future regression.
     if (currentData.awaitingCartReview) {
-      const upper = messageToProcess.trim().toUpperCase();
+      const upper = rawMessage.trim().toUpperCase();
       if (upper === 'CONFIRM_CART') {
         // Proceed to address / checkout — clear review flag and run DONE through state machine
         currentData = { ...currentData, awaitingCartReview: undefined };

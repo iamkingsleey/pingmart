@@ -271,6 +271,66 @@ Rules:
   }
 }
 
+// ─── Multi-item selection extractor ──────────────────────────────────────────
+
+/**
+ * Extracts catalogue item numbers and quantities from a natural-language message.
+ *
+ * Used when a customer references multiple items by NUMBER (not name) in a single
+ * message, e.g. "I also selected 10 and 14 in addition to 5".
+ *
+ * @param message       Raw customer message
+ * @param catalogueSize Number of items in the current catalogue (1-indexed upper bound)
+ * @returns             Array of {itemNumber, quantity} — empty array if nothing parsed
+ */
+export async function extractItemSelections(
+  message: string,
+  catalogueSize: number,
+): Promise<Array<{ itemNumber: number; quantity: number }>> {
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 256,
+      system: `You are a parser for a WhatsApp shopping bot.
+Extract product item numbers and quantities from the customer's message.
+The catalogue has ${catalogueSize} items numbered 1 to ${catalogueSize}.
+Return ONLY a JSON array. Each element: {"itemNumber": <int>, "quantity": <int>}.
+If an item is mentioned without a quantity, default quantity to 1.
+If no valid item numbers can be extracted, return an empty array [].
+No markdown, no explanation — raw JSON array only.
+
+Examples:
+"I want 5, 10, and 14" → [{"itemNumber":5,"quantity":1},{"itemNumber":10,"quantity":1},{"itemNumber":14,"quantity":1}]
+"Give me 2 of item 3 and 1 of item 7" → [{"itemNumber":3,"quantity":2},{"itemNumber":7,"quantity":1}]
+"I also selected 10 and 14 in addition to 5" → [{"itemNumber":5,"quantity":1},{"itemNumber":10,"quantity":1},{"itemNumber":14,"quantity":1}]
+"Add items 3, 7 and 12" → [{"itemNumber":3,"quantity":1},{"itemNumber":7,"quantity":1},{"itemNumber":12,"quantity":1}]
+"I wan take number 2, 5 and 8" → [{"itemNumber":2,"quantity":1},{"itemNumber":5,"quantity":1},{"itemNumber":8,"quantity":1}]
+"Items 4 and 9 please" → [{"itemNumber":4,"quantity":1},{"itemNumber":9,"quantity":1}]`,
+      messages: [{ role: 'user', content: message }],
+    });
+
+    const rawText = response.content[0]?.type === 'text' ? response.content[0].text.trim() : '[]';
+    const jsonText = rawText.startsWith('```')
+      ? rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+      : rawText;
+
+    const parsed = JSON.parse(jsonText) as Array<{ itemNumber: number; quantity: number }>;
+
+    // Validate: keep only entries within catalogue bounds with positive quantities
+    return parsed
+      .filter(
+        (s) =>
+          typeof s.itemNumber === 'number' &&
+          typeof s.quantity  === 'number' &&
+          s.itemNumber >= 1 && s.itemNumber <= catalogueSize &&
+          s.quantity >= 1,
+      )
+      .map((s) => ({ itemNumber: Math.round(s.itemNumber), quantity: Math.max(1, Math.round(s.quantity)) }));
+  } catch {
+    return [];
+  }
+}
+
 // ─── Vendor Dashboard Intent Classifier ──────────────────────────────────────
 
 /**
