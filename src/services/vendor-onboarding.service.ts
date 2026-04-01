@@ -832,15 +832,22 @@ async function handleSheetImport(
   }
 
   const sheetId = sheetIdMatch[1];
-  const csvUrl  = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=0`;
+  // gviz/tq works server-side without session cookies; export?format=csv requires
+  // Google auth cookies and returns empty rows when called from a server.
+  const csvUrl  = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv`;
 
   let csvText: string;
   try {
     const res = await fetch(csvUrl, { redirect: 'follow' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     csvText = await res.text();
-    // Private sheets redirect to a Google accounts page
-    if (csvText.includes('accounts.google.com') || csvText.includes('Sign in')) {
+    // Private sheets: gviz returns a JSON error or Google login HTML
+    if (
+      csvText.includes('accounts.google.com') ||
+      csvText.includes('Sign in') ||
+      csvText.includes('"status":"error"') ||
+      csvText.startsWith('<!DOCTYPE')
+    ) {
       throw new Error('private');
     }
   } catch (err) {
