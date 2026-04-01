@@ -302,6 +302,10 @@ export interface IncomingMessageJob {
   vendorWhatsAppNumber: string;
   messageId: string;
   timestamp: string;
+  /** Present when the incoming message is an image (type === 'image'). */
+  imageMediaId?: string;
+  /** Caption attached to the image, if any. */
+  imageCaption?: string;
 }
 
 export interface PaymentProcessingJob {

@@ -10,9 +10,9 @@ import { routeIncomingMessage } from '../../services/router.service';
 import { logger, maskPhone } from '../../utils/logger';
 
 incomingMessageQueue.process(async (job) => {
-  const { from, message, vendorWhatsAppNumber, messageId } = job.data;
-  logger.info('Processing incoming message', { from: maskPhone(from) });
-  await routeIncomingMessage(from, message, vendorWhatsAppNumber, messageId ?? '');
+  const { from, message, vendorWhatsAppNumber, messageId, imageMediaId, imageCaption } = job.data;
+  logger.info('Processing incoming message', { from: maskPhone(from), hasImage: !!imageMediaId });
+  await routeIncomingMessage(from, message, vendorWhatsAppNumber, messageId ?? '', imageMediaId, imageCaption);
 });
 
 logger.info('Incoming message worker started');

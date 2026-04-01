@@ -27,7 +27,7 @@ import { sessionRepository } from '../repositories/session.repository';
 import { orderRepository } from '../repositories/order.repository';
 import { processIncomingMessage } from './order/order.service';
 import { handleVendorStatusCommand } from './delivery/physicalDelivery.service';
-import { startVendorOnboarding, handleVendorOnboarding } from './vendor-onboarding.service';
+import { startVendorOnboarding, handleVendorOnboarding, handleVendorProductPhoto } from './vendor-onboarding.service';
 import { handleVendorDashboard } from './vendor-management.service';
 import { customerRepository } from '../repositories/customer.repository';
 import { logger, maskPhone } from '../utils/logger';
@@ -52,16 +52,20 @@ const STORE_CODE_REGEX = /^[A-Z0-9][A-Z0-9_]{3,19}$/;
  * Routes a single inbound message to the correct handler.
  * Called from the incomingMessage Bull worker.
  *
- * @param senderPhone        E.164 sender phone number
- * @param message            Normalised text content
- * @param vendorWhatsAppNumber  The Pingmart display number (from Meta webhook metadata)
- * @param messageId          Meta message ID for dedup (may be empty string)
+ * @param senderPhone          E.164 sender phone number
+ * @param message              Normalised text content (empty string for image messages)
+ * @param vendorWhatsAppNumber The Pingmart display number (from Meta webhook metadata)
+ * @param messageId            Meta message ID for dedup (may be empty string)
+ * @param imageMediaId         WhatsApp media ID when the message is an image
+ * @param imageCaption         Caption attached to the image, if any
  */
 export async function routeIncomingMessage(
   senderPhone: string,
   message: string,
   _vendorWhatsAppNumber: string,
   messageId: string,
+  imageMediaId?: string,
+  imageCaption?: string,
 ): Promise<void> {
   // ── 1. Dedup ──────────────────────────────────────────────────────────────
   // Prevents double-processing from Meta retries AND Bull stall-retries.
@@ -75,7 +79,15 @@ export async function routeIncomingMessage(
     }
   }
 
-  logger.info('Router: routing message', { from: maskPhone(senderPhone) });
+  logger.info('Router: routing message', { from: maskPhone(senderPhone), hasImage: !!imageMediaId });
+
+  // ── 1b. Image message routing ─────────────────────────────────────────────
+  // Image messages have an empty text payload. Route them straight to the
+  // dedicated image handler so they never fall through to the text paths.
+  if (imageMediaId) {
+    await routeImageMessage(senderPhone, imageMediaId, imageCaption ?? '');
+    return;
+  }
 
   // ── 2. Pending router-state replies ──────────────────────────────────────
   const routerState = await redis.get(`router:state:${senderPhone}`);
@@ -490,4 +502,40 @@ async function showShopOrSellScreen(phone: string): Promise<void> {
       { id: 'SHOP_FROM_STORE',  title: '🛍️ Shop from a store' },
     ],
   });
+}
+
+/**
+ * Handles an inbound image message.
+ *
+ * Vendors who are in the ADDING_PRODUCTS step with productInputMode === 'photos'
+ * get their product photo extracted. Everyone else receives the standard
+ * "type MENU to browse" nudge.
+ */
+async function routeImageMessage(
+  phone: string,
+  imageMediaId: string,
+  caption: string,
+): Promise<void> {
+  const vendor = await prisma.vendor.findUnique({ where: { ownerPhone: phone } });
+  if (vendor) {
+    const setupSession = await prisma.vendorSetupSession.findUnique({
+      where: { vendorId: vendor.id },
+    });
+    if (setupSession && !setupSession.completedAt && setupSession.step === 'ADDING_PRODUCTS') {
+      const data = (setupSession.collectedData ?? {}) as Record<string, unknown>;
+      if (data.productInputMode === 'photos') {
+        await handleVendorProductPhoto(phone, imageMediaId, caption, vendor, setupSession);
+        return;
+      }
+    }
+  }
+
+  // Default: helpful nudge to customers (and vendors not in photo mode)
+  const customer = await customerRepository.findByWhatsAppNumber(phone);
+  const lang = (customer?.language as Language | undefined) ?? 'en';
+  await messageQueue.add({
+    to: phone,
+    message: `Thanks for the image! 📸 To order or browse products, just type *MENU*. 😊`,
+  });
+  logger.info('Image routed to fallback nudge', { from: maskPhone(phone), lang });
 }

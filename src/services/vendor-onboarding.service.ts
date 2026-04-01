@@ -16,11 +16,13 @@
  * LLM agent has full context across WhatsApp sessions (no in-memory state required).
  */
 import Anthropic from '@anthropic-ai/sdk';
+import fetch from 'node-fetch';
 import { Vendor, VendorSetupSession, Prisma } from '@prisma/client';
 import { prisma } from '../repositories/prisma';
 import { messageQueue } from '../queues/message.queue';
 import { InteractiveButton } from '../types';
 import { encryptBankAccount } from '../utils/crypto';
+import { uploadProductImageBuffer } from '../utils/cloudinary';
 import { logger, maskPhone } from '../utils/logger';
 import { env } from '../config/env';
 import { detectLanguageSwitchRequest } from './llm.service';
@@ -45,6 +47,7 @@ interface ProductInput {
   price: number;
   category?: string;
   description?: string;
+  imageUrl?: string; // Cloudinary URL — set when product was added via photo
 }
 
 interface CollectedData {
@@ -69,6 +72,13 @@ interface CollectedData {
 
   // Products added during ADDING_PRODUCTS
   products?: ProductInput[];
+
+  // Pending products extracted but not yet confirmed by the vendor
+  pendingProducts?: ProductInput[];
+  pendingIsDone?: boolean; // true if vendor said DONE in the same message
+
+  // How the vendor chose to add products (set once when they tap an option button)
+  productInputMode?: 'text' | 'sheet' | 'photos';
 
   // Full LLM conversation history (last 20 exchanges max)
   history: LLMMessage[];
@@ -378,18 +388,19 @@ async function handleCollectingInfo(
       },
     });
 
-    await messageQueue.add({ to: phone, message: visibleResponse });
+    const catWord  = catalogueWord(newData.businessType);
+    const catEmoji = productSectionEmoji(newData.businessType);
     await messageQueue.add({
       to: phone,
       message:
-        `Now let's build your menu! 🛍️\n\n` +
-        `Send your products one by one like this:\n` +
-        `*Product name | Price | Category*\n\n` +
-        `You can also add a short description:\n` +
-        `_Chicken Shawarma | 2500 | Shawarma | Crispy grilled chicken wrap_\n\n` +
-        `Or list multiple in one message:\n` +
-        `_"I have chicken shawarma for 2500 and beef for 2000"_\n\n` +
-        `Type *DONE* when you've added everything 😊`,
+        `${visibleResponse}\n\n` +
+        `${catEmoji} *Now let's build your ${catWord}!*\n\n` +
+        `How would you like to add your products?`,
+      buttons: [
+        { id: 'ADD_PRODUCTS_TEXT',   title: '✍️ Type my products' },
+        { id: 'ADD_PRODUCTS_SHEET',  title: '📊 Google Sheet'     },
+        { id: 'ADD_PRODUCTS_PHOTOS', title: '📸 Send photos'      },
+      ] as InteractiveButton[],
     });
   } else {
     // Continue collecting
@@ -459,15 +470,68 @@ async function handleAddingProducts(
   session: VendorSetupSession,
   data: CollectedData,
 ): Promise<void> {
-  const trimmed = message.trim().toUpperCase();
+  const trimmed = message.trim();
+  const upper   = trimmed.toUpperCase();
   const products = data.products ?? [];
+  const catWord  = catalogueWord(data.businessType);
 
-  // DONE command — advance to payment setup
-  if (trimmed === 'DONE' || trimmed === 'FINISH' || trimmed === "THAT'S ALL") {
+  // ── 1. Pending confirmation gate ───────────────────────────────────────────
+  // When pendingProducts is set, we're waiting for YES or NO before saving.
+  if (data.pendingProducts?.length) {
+    if (upper === 'CONFIRM_PRODUCTS') {
+      const newProducts = [...products, ...data.pendingProducts];
+      const isDone = data.pendingIsDone ?? false;
+      const newData: CollectedData = {
+        ...data,
+        products: newProducts,
+        pendingProducts: undefined,
+        pendingIsDone: undefined,
+      };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data: { collectedData: newData as unknown as PrismaJson },
+      });
+      const names = data.pendingProducts.map((p) => `*${p.name}*`).join(', ');
+      await messageQueue.add({
+        to: phone,
+        message:
+          `✅ ${names} added to your ${catWord}!\n\n` +
+          `You now have *${newProducts.length}* item${newProducts.length !== 1 ? 's' : ''} 😊` +
+          (!isDone ? `\n\nSend another product or type *DONE* when you're finished.` : ''),
+      });
+      if (isDone) {
+        await advanceToPaymentSetup(phone, vendor, session, newData);
+      }
+      return;
+    }
+
+    if (upper === 'CANCEL_PRODUCTS') {
+      const newData: CollectedData = { ...data, pendingProducts: undefined, pendingIsDone: undefined };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data: { collectedData: newData as unknown as PrismaJson },
+      });
+      await messageQueue.add({
+        to: phone,
+        message:
+          `No problem! Let's try again.\n\n` +
+          `*Product name | Price | Category*\n\n` +
+          `Example: ${exampleProductLine(data.businessType)} 😊`,
+      });
+      return;
+    }
+
+    // Anything else — re-show the confirmation so the vendor can tap Yes or No
+    await showPendingConfirmation(phone, data.pendingProducts, data.businessType);
+    return;
+  }
+
+  // ── 2. DONE command ────────────────────────────────────────────────────────
+  if (upper === 'DONE' || upper === 'FINISH' || upper === "THAT'S ALL") {
     if (products.length === 0) {
       await messageQueue.add({
         to: phone,
-        message: `You haven't added any products yet! Send your first product to continue. 😊`,
+        message: `You haven't added anything to your ${catWord} yet! Send your first product to continue. 😊`,
       });
       return;
     }
@@ -475,9 +539,93 @@ async function handleAddingProducts(
     return;
   }
 
-  // ── Fast path: deterministic pipe-separated parser ───────────────────────
-  // Handles structured input like "Name | ₦21,500 | Category" without an LLM call.
-  // Supports ₦ symbol, comma-formatted numbers, and multi-line (multiple products at once).
+  // ── 3. Input-mode selection buttons ───────────────────────────────────────
+  if (upper === 'ADD_PRODUCTS_TEXT') {
+    const newData: CollectedData = { ...data, productInputMode: 'text' };
+    await prisma.vendorSetupSession.update({
+      where: { id: session.id },
+      data: { collectedData: newData as unknown as PrismaJson },
+    });
+    await messageQueue.add({
+      to: phone,
+      message:
+        `Great! Send each item like this:\n` +
+        `*Product name | Price | Category*\n\n` +
+        `Example: ${exampleProductLine(data.businessType)}\n\n` +
+        `Or just describe them naturally — I'll extract the details. Type *DONE* when finished 😊`,
+    });
+    return;
+  }
+
+  if (upper === 'ADD_PRODUCTS_SHEET') {
+    const newData: CollectedData = { ...data, productInputMode: 'sheet' };
+    await prisma.vendorSetupSession.update({
+      where: { id: session.id },
+      data: { collectedData: newData as unknown as PrismaJson },
+    });
+    await messageQueue.add({
+      to: phone,
+      message:
+        `📊 *Google Sheets Import*\n\n` +
+        `1. Open your sheet\n` +
+        `2. Click *Share → Anyone with the link → Viewer*\n` +
+        `3. Copy the link and paste it here\n\n` +
+        `Your sheet should have columns for *Name, Price, Category* ` +
+        `(column order doesn't matter — I'll figure it out). 😊`,
+    });
+    return;
+  }
+
+  if (upper === 'ADD_PRODUCTS_PHOTOS') {
+    const newData: CollectedData = { ...data, productInputMode: 'photos' };
+    await prisma.vendorSetupSession.update({
+      where: { id: session.id },
+      data: { collectedData: newData as unknown as PrismaJson },
+    });
+    await messageQueue.add({
+      to: phone,
+      message:
+        `📸 *Product Photo Upload*\n\n` +
+        `Send each product photo one at a time. Add a caption with the *name and price*:\n\n` +
+        `_"Ankara Midi Dress - ₦18,000"_\n` +
+        `_"Wireless Earbuds - 35000"_\n\n` +
+        `I'll read the details and ask you to confirm before saving. ` +
+        `Type *DONE* when you've sent everything 😊`,
+    });
+    return;
+  }
+
+  // ── 4. Route by input mode ─────────────────────────────────────────────────
+  if (data.productInputMode === 'sheet') {
+    await handleSheetImport(phone, trimmed, vendor, session, data);
+    return;
+  }
+
+  if (data.productInputMode === 'photos') {
+    // Vendor is in photo mode but sent text — likely a command or accidental
+    await messageQueue.add({
+      to: phone,
+      message: `📸 Send product photos with a caption. Type *DONE* when finished, or switch to typing:`,
+      buttons: [
+        { id: 'ADD_PRODUCTS_TEXT', title: '✍️ Switch to Typing' },
+        { id: 'DONE',              title: '✅ Done — All Added'  },
+      ] as InteractiveButton[],
+    });
+    return;
+  }
+
+  // ── 5. Text mode (default when vendor just starts typing) ─────────────────
+  // Set the mode implicitly if no option was selected yet
+  if (!data.productInputMode) {
+    const newData: CollectedData = { ...data, productInputMode: 'text' };
+    await prisma.vendorSetupSession.update({
+      where: { id: session.id },
+      data: { collectedData: newData as unknown as PrismaJson },
+    });
+    data = newData;
+  }
+
+  // Try deterministic pipe parser first — no LLM call needed for structured input
   const pipeProducts = tryParsePipeLines(message);
   let extractedProducts: ProductInput[];
   let isDone = false;
@@ -485,7 +633,7 @@ async function handleAddingProducts(
   if (pipeProducts !== null) {
     extractedProducts = pipeProducts;
   } else {
-    // ── Fallback: LLM extraction for natural-language input ─────────────────
+    // Natural language — use LLM extraction
     try {
       const result = await anthropic.messages.create({
         model: env.ANTHROPIC_MODEL,
@@ -494,7 +642,6 @@ async function handleAddingProducts(
         messages: [{ role: 'user', content: message }],
       });
       const rawText = result.content[0].type === 'text' ? result.content[0].text : '{}';
-      // Strip markdown fences Claude sometimes adds
       const jsonText = rawText.startsWith('```')
         ? rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
         : rawText.trim();
@@ -505,40 +652,323 @@ async function handleAddingProducts(
       logger.error('Onboarding LLM error (ADDING_PRODUCTS)', { err, phone: maskPhone(phone) });
       await messageQueue.add({
         to: phone,
-        message: `Hmm, I couldn't read that product format. Try:\n*Product Name | Price | Category*\n\nExample: _CeraVe Cleanser | ₦21,500 | Skincare_ 😊`,
+        message:
+          `Hmm, I couldn't read that. Try:\n` +
+          `*Product Name | Price | Category*\n\n` +
+          `Example: ${exampleProductLine(data.businessType)} 😊`,
       });
       return;
     }
   }
 
-  if (extractedProducts.length === 0) {
+  // Handle partial extraction — ask only for the specific missing piece
+  if (extractedProducts.length === 1) {
+    const [p] = extractedProducts;
+    const missingName  = !p.name  || p.name.trim() === '';
+    const missingPrice = !p.price || p.price <= 0;
+
+    if (missingName && !missingPrice) {
+      await messageQueue.add({
+        to: phone,
+        message: `Got a price of *₦${p.price.toLocaleString()}* — what's this product called? 😊`,
+      });
+      return;
+    }
+    if (!missingName && missingPrice) {
+      await messageQueue.add({
+        to: phone,
+        message: `Got *${p.name}* — how much does it sell for? 😊`,
+      });
+      return;
+    }
+  }
+
+  const validProducts = extractedProducts.filter((p) => p.name?.trim() && p.price > 0);
+  if (validProducts.length === 0) {
     await messageQueue.add({
       to: phone,
       message:
-        `I couldn't find any products in that message. Try:\n*Product Name | Price | Category*\n\nExample: _CeraVe Cleanser | ₦21,500 | Skincare_ 😊`,
+        `I couldn't find any products in that message. Try:\n` +
+        `*Product Name | Price | Category*\n\n` +
+        `Example: ${exampleProductLine(data.businessType)} 😊`,
     });
     return;
   }
 
-  const newProducts = [...products, ...extractedProducts];
-
+  // Store as pending and show confirmation before saving
+  const newData: CollectedData = {
+    ...data,
+    pendingProducts: validProducts,
+    pendingIsDone:   isDone || undefined,
+  };
   await prisma.vendorSetupSession.update({
     where: { id: session.id },
-    data: { collectedData: { ...data, products: newProducts } as unknown as PrismaJson },
+    data: { collectedData: newData as unknown as PrismaJson },
   });
+  await showPendingConfirmation(phone, validProducts, data.businessType);
+}
 
-  const names = extractedProducts.map((p) => `*${p.name}* — ₦${p.price.toLocaleString()}`).join('\n');
-  await messageQueue.add({
-    to: phone,
-    message:
-      `✅ Added:\n${names}\n\n` +
-      `You have *${newProducts.length}* product${newProducts.length !== 1 ? 's' : ''} so far.\n\n` +
-      `Send another product or type *DONE* when you're finished. 😊`,
-  });
+// ─── Sheet Import ─────────────────────────────────────────────────────────────
 
-  if (isDone) {
-    await advanceToPaymentSetup(phone, vendor, session, { ...data, products: newProducts });
+async function handleSheetImport(
+  phone: string,
+  message: string,
+  _vendor: Vendor,
+  session: VendorSetupSession,
+  data: CollectedData,
+): Promise<void> {
+  const catWord = catalogueWord(data.businessType);
+
+  // Extract Google Sheets document ID from any valid Sheets URL
+  const sheetIdMatch = message.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (!sheetIdMatch) {
+    await messageQueue.add({
+      to: phone,
+      message:
+        `That doesn't look like a Google Sheets link. It should look like:\n` +
+        `_https://docs.google.com/spreadsheets/d/..._\n\n` +
+        `Make sure the sheet is set to *"Anyone with the link can view"* first 😊`,
+    });
+    return;
   }
+
+  const sheetId = sheetIdMatch[1];
+  const csvUrl  = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+
+  let csvText: string;
+  try {
+    const res = await fetch(csvUrl, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    csvText = await res.text();
+    // Private sheets redirect to a Google accounts page
+    if (csvText.includes('accounts.google.com') || csvText.includes('Sign in')) {
+      throw new Error('private');
+    }
+  } catch (err) {
+    const isPrivate = (err as Error).message === 'private';
+    await messageQueue.add({
+      to: phone,
+      message: isPrivate
+        ? `I couldn't open that sheet — it's set to private.\n\n` +
+          `Please go to *Share → Anyone with the link → Viewer*, then paste the link again. 😊`
+        : `I couldn't fetch that sheet. Check that the link is correct and the sheet is viewable, then try again. 😊`,
+    });
+    return;
+  }
+
+  const products = parseCsvToProducts(csvText, data.businessType);
+  if (products.length === 0) {
+    await messageQueue.add({
+      to: phone,
+      message:
+        `I couldn't find any products in that sheet. Make sure it has columns for ` +
+        `*Name, Price, and Category*.\n\n` +
+        `Column headers can be anything containing those words (e.g. "Product Name", "Selling Price"). 😊`,
+    });
+    return;
+  }
+
+  const newData: CollectedData = { ...data, pendingProducts: products };
+  await prisma.vendorSetupSession.update({
+    where: { id: session.id },
+    data: { collectedData: newData as unknown as PrismaJson },
+  });
+
+  logger.info('Sheet import: extracted products', {
+    phone: maskPhone(phone),
+    count: products.length,
+    catWord,
+  });
+  await showPendingConfirmation(phone, products, data.businessType);
+}
+
+/** Parses a Google Sheets CSV export into ProductInput records. */
+function parseCsvToProducts(csv: string, businessType?: string): ProductInput[] {
+  const rows = parseCsvRows(csv);
+  if (rows.length < 2) return [];
+
+  const headers  = rows[0].map((h) => h.toLowerCase().trim());
+  const nameIdx  = headers.findIndex((h) => /name|product|item|title/.test(h));
+  const priceIdx = headers.findIndex((h) => /price|cost|amount|rate/.test(h));
+  const catIdx   = headers.findIndex((h) => /category|type|kind|dept/.test(h));
+  const descIdx  = headers.findIndex((h) => /desc|detail|note|about/.test(h));
+
+  if (nameIdx === -1 || priceIdx === -1) return [];
+
+  const products: ProductInput[] = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row      = rows[i];
+    const name     = row[nameIdx]?.trim();
+    const rawPrice = (row[priceIdx] ?? '').replace(/[₦,\s]/g, '');
+    let   price    = parseFloat(rawPrice);
+    if (/^\d+(\.\d+)?k$/i.test(rawPrice)) price = parseFloat(rawPrice) * 1000;
+
+    if (!name || isNaN(price) || price <= 0) continue;
+
+    products.push({
+      name,
+      price,
+      category: catIdx !== -1 && row[catIdx]?.trim()
+        ? row[catIdx].trim()
+        : (businessType ?? 'general'),
+      ...(descIdx !== -1 && row[descIdx]?.trim() ? { description: row[descIdx].trim() } : {}),
+    });
+  }
+  return products;
+}
+
+/** Minimal RFC-4180 CSV parser — handles quoted fields with embedded commas/newlines. */
+function parseCsvRows(csv: string): string[][] {
+  const rows: string[][] = [];
+  let   current: string[] = [];
+  let   field    = '';
+  let   inQuotes = false;
+
+  for (let i = 0; i < csv.length; i++) {
+    const ch = csv[i];
+    if (ch === '"') {
+      if (inQuotes && csv[i + 1] === '"') { field += '"'; i++; }  // escaped quote
+      else inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      current.push(field); field = '';
+    } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+      if (ch === '\r' && csv[i + 1] === '\n') i++;  // CRLF
+      current.push(field); field = '';
+      if (current.some((c) => c.trim())) rows.push(current);
+      current = [];
+    } else {
+      field += ch;
+    }
+  }
+  // flush last row
+  if (field || current.length) {
+    current.push(field);
+    if (current.some((c) => c.trim())) rows.push(current);
+  }
+  return rows;
+}
+
+// ─── Photo Product Handler (called from router for image messages) ─────────────
+
+/**
+ * Downloads a product photo from WhatsApp, uploads it to Cloudinary, uses
+ * Claude Vision to extract product details from the image + caption, then
+ * shows a confirmation preview before saving.
+ *
+ * Exported so the router can call it when a vendor sends an image in
+ * ADDING_PRODUCTS step with productInputMode === 'photos'.
+ */
+export async function handleVendorProductPhoto(
+  phone: string,
+  imageMediaId: string,
+  caption: string,
+  vendor: Vendor,
+  session: VendorSetupSession,
+): Promise<void> {
+  const data = (session.collectedData as unknown as CollectedData) ?? { history: [] };
+
+  // Download from WhatsApp CDN
+  let imageBuffer: Buffer;
+  try {
+    const mediaRes  = await fetch(`https://graph.facebook.com/v19.0/${imageMediaId}`, {
+      headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` },
+    });
+    if (!mediaRes.ok) throw new Error(`Media URL fetch ${mediaRes.status}`);
+    const { url }   = await mediaRes.json() as { url: string };
+    const imgRes    = await fetch(url, { headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` } });
+    if (!imgRes.ok) throw new Error(`Image download ${imgRes.status}`);
+    imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+  } catch (err) {
+    logger.error('Failed to download product photo', { err, phone: maskPhone(phone) });
+    await messageQueue.add({ to: phone, message: `😅 I couldn't download that photo. Please try sending it again.` });
+    return;
+  }
+
+  // Upload to Cloudinary
+  let imageUrl: string;
+  try {
+    imageUrl = await uploadProductImageBuffer(imageBuffer, `${vendor.id}-${Date.now()}`);
+  } catch (err) {
+    logger.error('Failed to upload product photo to Cloudinary', { err, phone: maskPhone(phone) });
+    await messageQueue.add({ to: phone, message: `😅 Photo upload failed. Please try sending it again.` });
+    return;
+  }
+
+  // Claude Vision — extract product details from image + caption
+  const imageBase64 = imageBuffer.toString('base64');
+  let extracted: { name?: string | null; price?: number | null; category?: string | null } = {};
+  try {
+    const result = await anthropic.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 256,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type:   'image',
+            source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 },
+          },
+          {
+            type: 'text',
+            text:
+              `This vendor sells ${data.businessType ?? 'products'}. ` +
+              `Extract product details from this image.` +
+              (caption ? ` The vendor's caption is: "${caption}". Use it as the primary source for name and price.` : '') +
+              ` Return ONLY JSON: {"name": "...", "price": 0, "category": "..."}. ` +
+              `Price must be a plain number (strip ₦, commas, spaces, the word "naira"). ` +
+              `Set a field to null if you cannot confidently extract it.`,
+          },
+        ],
+      }],
+    });
+    const rawText  = result.content[0].type === 'text' ? result.content[0].text : '{}';
+    const jsonText = rawText.startsWith('```')
+      ? rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+      : rawText.trim();
+    extracted = JSON.parse(jsonText);
+  } catch (err) {
+    logger.error('Claude Vision extraction failed', { err, phone: maskPhone(phone) });
+  }
+
+  const name     = typeof extracted.name     === 'string' && extracted.name.trim()  ? extracted.name.trim()  : undefined;
+  const price    = typeof extracted.price    === 'number' && extracted.price > 0    ? extracted.price        : undefined;
+  const category = typeof extracted.category === 'string' && extracted.category.trim()
+    ? extracted.category.trim()
+    : (data.businessType ?? 'general');
+
+  // Ask only for the specific missing piece
+  if (!name && !price) {
+    await messageQueue.add({
+      to: phone,
+      message:
+        `📸 Got the photo! But I couldn't read the details from it.\n\n` +
+        `Please add a caption with the product name and price:\n` +
+        `_"Ankara Dress - ₦18,000"_`,
+    });
+    return;
+  }
+  if (!name) {
+    await messageQueue.add({
+      to: phone,
+      message: `Got a price of *₦${price!.toLocaleString()}* from that photo — what's this product called? 😊`,
+    });
+    return;
+  }
+  if (!price) {
+    await messageQueue.add({
+      to: phone,
+      message: `Got *${name}* — how much does it sell for? 😊`,
+    });
+    return;
+  }
+
+  const product: ProductInput = { name, price, category, imageUrl };
+  const newData: CollectedData = { ...data, pendingProducts: [product] };
+  await prisma.vendorSetupSession.update({
+    where: { id: session.id },
+    data: { collectedData: newData as unknown as PrismaJson },
+  });
+  await showPendingConfirmation(phone, [product], data.businessType);
 }
 
 async function advanceToPaymentSetup(
@@ -983,8 +1413,8 @@ async function activateStore(
       {
         title: '🏪 Manage Your Store',
         rows: [
-          { id: 'ADD PRODUCT',    title: '📦 Add Product',     description: 'Add a new item to your menu' },
-          { id: 'REMOVE PRODUCT', title: '🗑️ Remove Product',  description: 'Remove an item from your menu' },
+          { id: 'ADD PRODUCT',    title: '📦 Add Product',     description: `Add a new item to your ${catalogueWord(data.businessType)}` },
+          { id: 'REMOVE PRODUCT', title: '🗑️ Remove Product',  description: `Remove an item from your ${catalogueWord(data.businessType)}` },
           { id: 'UPDATE PRICE',   title: '💲 Update Price',    description: 'Change a product\'s price' },
           { id: 'MY ORDERS',      title: '📋 My Orders',       description: 'View and manage recent orders' },
           { id: 'MY LINK',        title: '🔗 My Link',         description: 'Get your shareable store link' },
@@ -1056,32 +1486,55 @@ Important rules:
 }
 
 function buildProductExtractionPrompt(businessType: string): string {
+  // Category-appropriate example so the LLM understands what kind of product to expect
+  const examples: Record<string, { name: string; price: number; category: string; description?: string }> = {
+    food:    { name: 'Chicken Shawarma',             price: 2500,  category: 'Shawarma',       description: 'Crispy grilled chicken wrap' },
+    fashion: { name: 'Ankara Midi Dress',            price: 18000, category: "Women's Clothing"                                           },
+    beauty:  { name: 'CeraVe Foaming Cleanser',      price: 21500, category: 'Skincare'                                                   },
+    digital: { name: 'Instagram Growth Masterclass', price: 12000, category: 'Digital Course'                                             },
+    general: { name: 'Wireless Earbuds',             price: 35000, category: 'Electronics'                                                },
+  };
+  const ex     = examples[businessType] ?? examples.general;
+  const exJson = JSON.stringify(ex, null, 4);
+
+  // Category-specific defaults to help the LLM infer missing categories
+  const categoryHints: Record<string, string> = {
+    food:    'Main, Drinks, Sides, Desserts, Snacks',
+    fashion: 'Tops, Bottoms, Dresses, Accessories, Shoes, Bags',
+    beauty:  'Skincare, Makeup, Haircare, Body, Fragrance',
+    digital: 'Design, Development, Templates, Courses, Coaching',
+    general: 'Electronics, Groceries, Furniture, Services, Other',
+  };
+  const catHint = categoryHints[businessType] ?? 'General';
+
   return `You are helping a vendor add products to their Pingmart store (business type: ${businessType}).
 
-Extract product information from the vendor's message. Handle flexible formats.
+Extract product information from the vendor's message. Handle ALL input formats:
+- Pipe-separated:  "Name | Price | Category"
+- Natural English: "I have a dress called Ankara Midi for 18,000 naira, it's for women"
+- Multiple items:  "I sell X for 5000 and Y for 3000, both are business books"
+- Pidgin:          "I get one book wey dey go for 9000, na business book"
+- Mixed order:     "18,000 for the Ankara Midi Dress, women's clothing category"
 
 Return ONLY valid JSON in this exact format (no other text):
 {
   "products": [
-    {
-      "name": "Chicken Shawarma",
-      "price": 2500,
-      "category": "Shawarma",
-      "description": "Crispy grilled chicken wrap"
-    }
+    ${exJson}
   ],
   "isDone": false
 }
 
 Rules:
 - Set isDone: true if vendor says DONE, FINISH, THAT'S ALL, or similar
-- Price must always be a plain number (e.g. 21500). Strip ₦ symbol and commas before converting
+- Price must always be a plain number. Strip ₦ symbol, commas, spaces, and the word "naira"
 - If price has "k" suffix (e.g. "2.5k"), convert to number (2500)
-- If no category given, use the business type as default
-- If no description given, omit the field (do not include it as null)
-- Extract multiple products if mentioned in one message
-- Never invent information not provided by the vendor
-- If no products can be extracted (e.g. vendor just said something unrelated), return {"products": [], "isDone": false}`;
+- Typical categories for ${businessType} stores: ${catHint}. Use these when no category is given
+- If no description given, omit the field entirely (do not set it to null)
+- Extract ALL products mentioned, even if in one message
+- If you can extract a name but not a price, include the product with price: 0 so the caller can ask for just the missing price
+- If you can extract a price but not a name, include price and set name: "" so the caller can ask for just the name
+- Never invent information the vendor did not provide
+- If nothing can be extracted, return {"products": [], "isDone": false}`;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1137,6 +1590,89 @@ function businessTypeEmoji(type?: string): string {
     food: '🍽️', fashion: '👗', beauty: '💄', digital: '💻', general: '🏪',
   };
   return map[type ?? 'general'] ?? '🏪';
+}
+
+/**
+ * Returns the correct vocabulary word for a vendor's product list based on
+ * their business category. Used throughout all onboarding messages so the
+ * language always matches the business (menu for food, library for digital,
+ * catalogue for everything else).
+ */
+function catalogueWord(businessType?: string): string {
+  switch (businessType) {
+    case 'food':    return 'menu';
+    case 'digital': return 'library';
+    default:        return 'catalogue';
+  }
+}
+
+/**
+ * Returns a realistic, category-appropriate pipe-separated example product
+ * line for use in onboarding prompt messages.
+ */
+function exampleProductLine(businessType?: string): string {
+  switch (businessType) {
+    case 'food':    return '_Chicken Shawarma | 2,500 | Shawarma | Crispy grilled chicken wrap_';
+    case 'fashion': return '_Ankara Midi Dress | 18,000 | Dresses | Vibrant handmade fabric_';
+    case 'beauty':  return '_CeraVe Foaming Cleanser | 21,500 | Skincare | Gentle daily face wash_';
+    case 'digital': return '_Instagram Growth Masterclass | 12,000 | Digital Course_';
+    default:        return '_Wireless Earbuds | 35,000 | Electronics_';
+  }
+}
+
+/**
+ * Returns a contextual emoji for the catalogue-building section header.
+ */
+function productSectionEmoji(businessType?: string): string {
+  const map: Record<string, string> = {
+    food: '🍽️', fashion: '👗', beauty: '💄', digital: '💻',
+  };
+  return map[businessType ?? ''] ?? '🛍️';
+}
+
+/**
+ * Returns a per-product emoji shown in the confirmation preview.
+ */
+function productItemEmoji(businessType?: string): string {
+  const map: Record<string, string> = {
+    food: '🍔', fashion: '👗', beauty: '💄', digital: '📚',
+  };
+  return map[businessType ?? ''] ?? '📦';
+}
+
+/**
+ * Sends a confirmation preview of pending extracted products with Yes/No
+ * interactive buttons so the vendor can approve before anything is saved.
+ */
+async function showPendingConfirmation(
+  phone: string,
+  products: ProductInput[],
+  businessType?: string,
+): Promise<void> {
+  const icon = productItemEmoji(businessType);
+  const lines = products.map((p) =>
+    [
+      `${icon} *${p.name}*`,
+      `💰 ₦${p.price.toLocaleString()}`,
+      ...(p.category    ? [`📂 ${p.category}`]    : []),
+      ...(p.description ? [`📝 ${p.description}`] : []),
+    ].join('\n'),
+  );
+
+  const body =
+    products.length === 1
+      ? `Got it! Here's what I'm adding:\n\n${lines[0]}`
+      : `Got it! Here's what I'm adding:\n\n` +
+        products.map((_, i) => `*${i + 1}.* ${lines[i]}`).join('\n\n');
+
+  await messageQueue.add({
+    to: phone,
+    message: `${body}\n\nIs this correct?`,
+    buttons: [
+      { id: 'CONFIRM_PRODUCTS', title: '✅ Yes, Add It'   },
+      { id: 'CANCEL_PRODUCTS',  title: '✏️ Fix Details'  },
+    ] as InteractiveButton[],
+  });
 }
 
 function capitalise(s: string): string {

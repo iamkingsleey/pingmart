@@ -12,11 +12,9 @@ import { WhatsAppWebhookPayload, WhatsAppMessage } from '../types/whatsapp';
 import { msgFallback } from '../services/whatsapp/templates';
 import { normalisePhone } from '../utils/formatters';
 import { customerRepository } from '../repositories/customer.repository';
-import { vendorRepository } from '../repositories/vendor.repository';
 import { Language } from '../i18n';
 import { transcribeVoiceNote } from '../services/transcription.service';
 import { redis } from '../utils/redis';
-import { resolveStoreVocabulary, applyVocabulary } from '../utils/store-vocabulary';
 
 export function handleWhatsAppVerification(req: Request, res: Response): void {
   const mode = req.query['hub.mode'];
@@ -119,20 +117,19 @@ async function routeIncomingMessage(
 
     textContent = transcription; // falls through to queue below
 
-  } else if (message.type === 'image') {
-    // Images outside the payment flow get a helpful nudge
-    const customer = await customerRepository.findByWhatsAppNumber(from);
-    const lang = (customer?.language as Language | undefined) ?? 'en';
-    const imageVendor = await vendorRepository.findByWhatsAppNumber(vendorWhatsAppNumber);
-    const imageVocab = resolveStoreVocabulary(imageVendor?.businessType ?? 'general');
-    await messageQueue.add({
-      to: from,
-      message: applyVocabulary(
-        "Thanks for the image! 📸 To place an order, just type *MENU* to see what's available. 😊",
-        imageVocab,
-      ),
+  } else if (message.type === 'image' && message.image?.id) {
+    // Queue image messages so the router can route them appropriately:
+    //  • Vendors in ADDING_PRODUCTS photo mode → product photo extraction
+    //  • Everyone else → standard "type MENU" nudge (handled inside the router)
+    await incomingMessageQueue.add({
+      from,
+      message: '',                           // no text — imageMediaId carries the payload
+      vendorWhatsAppNumber,
+      messageId: message.id,
+      timestamp: message.timestamp,
+      imageMediaId: message.image.id,
+      imageCaption: message.image.caption ?? '',
     });
-    logger.info('Image message ignored', { from: maskPhone(from), lang });
     return;
 
   } else {

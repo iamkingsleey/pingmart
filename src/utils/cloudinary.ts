@@ -65,6 +65,32 @@ export async function uploadCoverImage(filePath: string): Promise<string> {
 }
 
 /**
+ * Uploads a product image received as a raw Buffer (e.g. downloaded from
+ * WhatsApp Cloud API). Uses the streaming upload API since there is no local
+ * file path available.
+ */
+export async function uploadProductImageBuffer(
+  buffer: Buffer,
+  publicId: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'pingmart/products',
+        public_id: publicId,
+        resource_type: 'image',
+        transformation: [{ width: 1200, height: 1200, crop: 'limit', quality: 'auto:good' }],
+      },
+      (err, result) => {
+        if (err || !result) reject(err ?? new Error('Cloudinary upload returned no result'));
+        else resolve(result.secure_url);
+      },
+    );
+    stream.end(buffer);
+  });
+}
+
+/**
  * Deletes a file from Cloudinary by its public ID.
  * Called when a product is deleted to avoid orphaned files.
  */
