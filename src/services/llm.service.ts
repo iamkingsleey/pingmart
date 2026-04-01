@@ -593,3 +593,94 @@ export async function extractBusinessFacts(rawVendorText: string): Promise<strin
     return rawVendorText.trim();
   }
 }
+
+// ─── Quantity Resolver ────────────────────────────────────────────────────────
+
+export interface QuantityResolution {
+  /**
+   * 'single' — quantity applies only to the current pending item.
+   * 'bulk'   — same quantity applies to every item (current + entire queue).
+   * 'list'   — explicit quantity per item, in selection order.
+   * 'unknown'— could not determine; ask the customer again.
+   */
+  type: 'single' | 'bulk' | 'list' | 'unknown';
+  /** For type=single or bulk: the resolved quantity (always ≥ 1). */
+  qty?: number;
+  /** For type=list: one quantity per item, in the same order as allItems. */
+  quantities?: number[];
+}
+
+/**
+ * Uses the LLM to resolve a natural-language quantity response from a customer.
+ *
+ * Called when the bot is collecting per-item quantities during checkout and
+ * the customer's reply is not a plain number (e.g. "1 each for all",
+ * "2 of everything", "abeg give me 1 of each").
+ *
+ * @param message       Raw customer message
+ * @param currentItem   Name of the item quantity is currently being collected for
+ * @param queueItems    Names of remaining items still in the quantity queue
+ */
+export async function extractQuantitiesFromMessage(
+  message: string,
+  currentItem: string,
+  queueItems: string[],
+): Promise<QuantityResolution> {
+  const allItems = [currentItem, ...queueItems];
+  const itemList = allItems.map((n, i) => `${i + 1}. ${n}`).join('\n');
+
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 128,
+      messages: [{
+        role: 'user',
+        content:
+          `A customer is selecting quantities during a shopping checkout.\n` +
+          `Items being ordered (in selection order):\n${itemList}\n\n` +
+          `Customer's reply: "${message}"\n\n` +
+          `Extract the intended quantities. Return ONLY valid JSON — one of:\n` +
+          `{"type":"bulk","qty":N}          — same quantity N for ALL items\n` +
+          `{"type":"single","qty":N}        — quantity N for item 1 only\n` +
+          `{"type":"list","quantities":[..]}— one quantity per item in order\n` +
+          `{"type":"unknown"}               — cannot determine\n\n` +
+          `Rules:\n` +
+          `- "1 each", "1 each for all", "1 for all", "all 1" → bulk qty 1\n` +
+          `- "2 of everything", "2 each", "abeg give me 2 of each" → bulk qty 2\n` +
+          `- "just 1", "one please" (no "each"/"all" signal) → single qty 1\n` +
+          `- "2, 1, 1" or "2 1 1" → list [2,1,1]\n` +
+          `- "1 for the first, 2 for the rest" → list [1, 2, 2, ...]\n` +
+          `- Named quantities like "3 Aveeno and 1 each for the rest" → list matching item order\n` +
+          `- Quantities must be integers 1–99. Return unknown if ambiguous.\n` +
+          `Return ONLY the JSON object, nothing else.`,
+      }],
+    });
+
+    const raw = response.content[0];
+    if (raw.type !== 'text') return { type: 'unknown' };
+
+    const json = raw.text.trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+
+    const parsed = JSON.parse(json) as Partial<QuantityResolution>;
+
+    if (parsed.type === 'bulk' && typeof parsed.qty === 'number' && parsed.qty >= 1 && parsed.qty <= 99) {
+      return { type: 'bulk', qty: parsed.qty };
+    }
+    if (parsed.type === 'single' && typeof parsed.qty === 'number' && parsed.qty >= 1 && parsed.qty <= 99) {
+      return { type: 'single', qty: parsed.qty };
+    }
+    if (parsed.type === 'list' && Array.isArray(parsed.quantities)) {
+      const quantities = parsed.quantities
+        .map((q) => Math.round(Number(q)))
+        .filter((q) => q >= 1 && q <= 99);
+      if (quantities.length > 0) return { type: 'list', quantities };
+    }
+
+    return { type: 'unknown' };
+  } catch {
+    return { type: 'unknown' };
+  }
+}

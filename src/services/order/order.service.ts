@@ -68,7 +68,7 @@ import { logger, maskPhone, maskReference } from '../../utils/logger';
 import { messageQueue } from '../../queues/message.queue';
 import { digitalDeliveryQueue } from '../../queues/digitalDelivery.queue';
 import { normaliseMessage } from '../nlp-router.service';
-import { generateNotFoundResponse, generateContextAwareAnswer, detectMessageLanguage, getItemNoteHint } from '../llm.service';
+import { generateNotFoundResponse, generateContextAwareAnswer, detectMessageLanguage, getItemNoteHint, extractQuantitiesFromMessage } from '../llm.service';
 import { detectEscalationTrigger, triggerHumanEscalation } from '../escalation.service';
 import { getStoreStatus } from '../../utils/working-hours';
 import { offHoursContactRepository } from '../../repositories/offHoursContact.repository';
@@ -1220,6 +1220,91 @@ function buildStoreConfirmMessage(vendor: Vendor): string {
   );
 }
 
+// ─── LLM Quantity Resolver ────────────────────────────────────────────────────
+
+/**
+ * Called when the customer is in the quantity-collection loop and sends a
+ * natural-language reply (not a bare number). Resolves the intent via LLM and:
+ *
+ *  'bulk'   → applies one quantity to every pending item at once, shows cart
+ *             summary, skips the per-item loop entirely.
+ *  'list'   → assigns explicit quantities in selection order, bulk-adds to cart.
+ *  'single' → treats as a plain number for just the current pending item and
+ *             delegates to the normal sync state machine.
+ *  'unknown'→ asks again with a friendly prompt (never the terse error string).
+ */
+async function resolveNaturalLanguageQuantity(
+  message: string,
+  data: SessionData,
+  lang: Language,
+): Promise<TransitionResult> {
+  const currentItem  = data.pendingProductName ?? 'item';
+  const queue        = data.pendingMultiQueue ?? [];
+  const queueNames   = queue.map((q) => q.name);
+
+  const resolution = await extractQuantitiesFromMessage(message, currentItem, queueNames);
+
+  // ── Unknown → friendly retry ──────────────────────────────────────────────
+  if (resolution.type === 'unknown') {
+    return {
+      messages: [`I didn't quite catch that — how many *${currentItem}* would you like? (e.g. 1, 2, 3)`],
+      nextState: ConversationState.ORDERING,
+      nextData: data,
+    };
+  }
+
+  // ── Single → pass numeric string to the sync state machine ───────────────
+  if (resolution.type === 'single') {
+    return handlePhysicalOrdering(String(resolution.qty), null as unknown as import('@prisma/client').Vendor, [], data, lang);
+  }
+
+  // ── Bulk or list → resolve quantities for every item then bulk-add to cart ─
+  const allItems = [
+    { productId: data.pendingProductId!, name: data.pendingProductName ?? 'Item', price: data.pendingProductPrice ?? 0 },
+    ...queue,
+  ];
+
+  const resolvedQuantities: number[] = allItems.map((_, i) => {
+    if (resolution.type === 'bulk') return resolution.qty!;
+    // list: use the quantity at this position, clamp with last value for extras
+    const quantities = resolution.quantities!;
+    return quantities[i] ?? quantities[quantities.length - 1] ?? 1;
+  });
+
+  // Build cart with all items applied
+  let cart = [...data.cart];
+  for (let i = 0; i < allItems.length; i++) {
+    const item  = allItems[i]!;
+    const qty   = resolvedQuantities[i]!;
+    const existing = cart.find((c) => c.productId === item.productId);
+    if (existing) {
+      cart = cart.map((c) => c.productId === item.productId ? { ...c, quantity: c.quantity + qty } : c);
+    } else {
+      cart = [...cart, { productId: item.productId, name: item.name, quantity: qty, unitPrice: item.price, productType: ProductType.PHYSICAL }];
+    }
+  }
+
+  const total      = formatNaira(calculateCartTotal(cart));
+  const cartLines  = cart.map((c) => `• ${c.name} × ${c.quantity} — ${formatNaira(c.unitPrice * c.quantity)}`).join('\n');
+  const summary    =
+    `✅ All added to cart!\n\n${cartLines}\n\n*Total: ${total}*\n\n` +
+    `Type *DONE* to checkout, or keep browsing to add more items.`;
+
+  return {
+    messages: [summary],
+    nextState: ConversationState.ORDERING,
+    nextData: {
+      ...data,
+      cart,
+      pendingProductId:    undefined,
+      pendingProductName:  undefined,
+      pendingProductPrice: undefined,
+      pendingMultiQueue:   undefined,
+      pendingNote:         undefined,
+    },
+  };
+}
+
 // ─── State Machine Router ─────────────────────────────────────────────────────
 
 async function runStateMachine(
@@ -1240,6 +1325,11 @@ async function runStateMachine(
     case ConversationState.ORDERING:
       if (data.activeOrderType === OrderType.DIGITAL || data.selectedProductId) {
         return handleDigitalOrdering(message, vendor, products, data, language);
+      }
+      // LLM-powered quantity resolution — intercept before the sync state machine
+      // when the customer has a pending item and sends a non-plain-number response.
+      if (data.pendingProductId && !/^\d+$/.test(message.trim())) {
+        return resolveNaturalLanguageQuantity(message, data, language);
       }
       return handlePhysicalOrdering(message, vendor, products, data, language);
 
