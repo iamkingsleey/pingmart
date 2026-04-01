@@ -525,8 +525,8 @@ const SHOP_OR_SELL_STRINGS: Record<Language, {
   },
   pid: {
     question:     `Wetin you wan do for Pingmart today?`,
-    sellLabel:    `🏪 I wan sell for Pingmart`,
-    shopLabel:    `🛍️ I wan buy something`,
+    sellLabel:    `🏪 I wan sell`,
+    shopLabel:    `🛍️ I wan shop`,
     shopRedirect:
       `To shop, you need store link from vendor.\n\n` +
       `Ask the vendor make dem share their Pingmart link with you —\n` +
