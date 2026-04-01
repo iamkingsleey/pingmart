@@ -832,7 +832,7 @@ async function handleSheetImport(
   }
 
   const sheetId = sheetIdMatch[1];
-  const csvUrl  = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+  const csvUrl  = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=0`;
 
   let csvText: string;
   try {
@@ -868,7 +868,7 @@ async function handleSheetImport(
   }
 
   const enrichedProducts = await enrichBooksWithMetadata(products);
-  const newData: CollectedData = { ...data, pendingProducts: enrichedProducts };
+  const newData: CollectedData = { ...data, pendingProducts: enrichedProducts, pendingIsDone: true };
   await prisma.vendorSetupSession.update({
     where: { id: session.id },
     data: { collectedData: newData as unknown as PrismaJson },
@@ -876,10 +876,50 @@ async function handleSheetImport(
 
   logger.info('Sheet import: extracted products', {
     phone: maskPhone(phone),
-    count: products.length,
+    count: enrichedProducts.length,
     catWord,
   });
-  await showPendingConfirmation(phone, products, data.businessType);
+  await showSheetImportPreview(phone, enrichedProducts, data.businessType);
+}
+
+/**
+ * Shows a preview of the first 5 imported products with the total count,
+ * then asks the vendor to confirm before anything is saved.
+ * Uses the existing CONFIRM_PRODUCTS / CANCEL_PRODUCTS button handlers.
+ */
+async function showSheetImportPreview(
+  phone: string,
+  products: ProductInput[],
+  businessType?: string,
+): Promise<void> {
+  const total   = products.length;
+  const preview = products.slice(0, 5);
+  const icon    = productItemEmoji(businessType);
+
+  const previewLines = preview.map((p, i) => {
+    const parts = [
+      `${i + 1}. *${p.name}* — ₦${p.price.toLocaleString()}`,
+      ...(p.category ? [`   📂 ${p.category}`] : []),
+    ];
+    return parts.join('\n');
+  });
+
+  const ellipsis = total > 5 ? `\n_...and ${total - 5} more_` : '';
+
+  const body =
+    `${icon} Found *${total} product${total !== 1 ? 's' : ''}* in your sheet. Here's a preview:\n\n` +
+    previewLines.join('\n') +
+    ellipsis +
+    `\n\nShall I import all *${total}*?`;
+
+  await messageQueue.add({
+    to: phone,
+    message: body,
+    buttons: [
+      { id: 'CONFIRM_PRODUCTS', title: '✅ Yes, Import All' },
+      { id: 'CANCEL_PRODUCTS',  title: '❌ Cancel'          },
+    ] as InteractiveButton[],
+  });
 }
 
 /** Parses a Google Sheets CSV export into ProductInput records. */
@@ -888,29 +928,38 @@ function parseCsvToProducts(csv: string, businessType?: string): ProductInput[] 
   if (rows.length < 2) return [];
 
   const headers  = rows[0].map((h) => h.toLowerCase().trim());
-  const nameIdx  = headers.findIndex((h) => /name|product|item|title/.test(h));
-  const priceIdx = headers.findIndex((h) => /price|cost|amount|rate/.test(h));
-  const catIdx   = headers.findIndex((h) => /category|type|kind|dept/.test(h));
+  // Fix 3: flexible header detection with expanded keyword sets
+  const nameIdx  = headers.findIndex((h) => /name|item|product|service|title/.test(h));
+  const priceIdx = headers.findIndex((h) => /price|cost|amount|rate|fee/.test(h));
+  const catIdx   = headers.findIndex((h) => /category|type|tag|group|section/.test(h));
   const descIdx  = headers.findIndex((h) => /desc|detail|note|about/.test(h));
 
   if (nameIdx === -1 || priceIdx === -1) return [];
 
+  // Default category: vendor's business type when no category column is present
+  const defaultCategory = businessType ?? 'general';
+
   const products: ProductInput[] = [];
   for (let i = 1; i < rows.length; i++) {
-    const row      = rows[i];
-    const name     = row[nameIdx]?.trim();
-    const rawPrice = (row[priceIdx] ?? '').replace(/[₦,\s]/g, '');
+    const row  = rows[i];
+    const name = row[nameIdx]?.trim();
+
+    // Fix 1: strip any currency symbol (₦ $ £ € ¥ ₹ ₵ ₦ etc.), commas, and whitespace
+    const rawPrice = (row[priceIdx] ?? '').replace(/[^\d.k]/gi, '');
     let   price    = parseFloat(rawPrice);
     if (/^\d+(\.\d+)?k$/i.test(rawPrice)) price = parseFloat(rawPrice) * 1000;
 
     if (!name || isNaN(price) || price <= 0) continue;
 
+    // Fix 3: use vendor's business type as category fallback when column is absent or empty
+    const category = (catIdx !== -1 && row[catIdx]?.trim())
+      ? row[catIdx].trim()
+      : defaultCategory;
+
     products.push({
       name,
       price,
-      category: catIdx !== -1 && row[catIdx]?.trim()
-        ? row[catIdx].trim()
-        : (businessType ?? 'general'),
+      category,
       ...(descIdx !== -1 && row[descIdx]?.trim() ? { description: row[descIdx].trim() } : {}),
     });
   }
