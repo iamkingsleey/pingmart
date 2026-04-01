@@ -30,6 +30,26 @@ export const BCRYPT_ROUNDS = 10;
 export const KOBO_PER_NAIRA = 100;
 export const NAIRA_DECIMAL_PLACES = 2;
 
+// ─── Freemium Plan Limits ─────────────────────────────────────────────────────
+
+/**
+ * Maximum notification numbers each plan supports.
+ * Infinity means no cap (Pro plan).
+ * Single source of truth — import from here, never hardcode in services.
+ */
+export const PLAN_NOTIFICATION_LIMITS: Record<string, number> = {
+  free:    1,
+  starter: 1,
+  growth:  3,
+  pro:     Infinity,
+};
+
+/** Monthly pricing labels shown in upgrade prompts. */
+export const PLAN_UPGRADE_PRICING: Record<string, string> = {
+  growth: '₦5,000/month',
+  pro:    '₦15,000/month',
+};
+
 // ─── Cloudinary ───────────────────────────────────────────────────────────────
 /** Folder in Cloudinary where digital product files are stored */
 export const CLOUDINARY_DIGITAL_FOLDER = 'orb/digital-products';

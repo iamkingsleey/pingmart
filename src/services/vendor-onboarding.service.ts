@@ -24,7 +24,9 @@ import { InteractiveButton, InteractiveListSection } from '../types';
 import { encryptBankAccount } from '../utils/crypto';
 import { uploadProductImageBuffer } from '../utils/cloudinary';
 import { logger, maskPhone } from '../utils/logger';
+import { normalisePhone } from '../utils/formatters';
 import { env } from '../config/env';
+import { PLAN_NOTIFICATION_LIMITS, PLAN_UPGRADE_PRICING } from '../config/constants';
 import { detectLanguageSwitchRequest } from './llm.service';
 import { redis } from '../utils/redis';
 import { Language } from '../i18n';
@@ -96,6 +98,10 @@ interface CollectedData {
   services?: Array<{ name: string; price: number; unit: string; turnaroundHours?: number; description?: string }>;
   pendingServices?: Array<{ name: string; price: number; unit: string; turnaroundHours?: number; description?: string }>;
   faqs?: Array<{ question: string; answer: string }>;
+
+  // Notification numbers (collected in NOTIFICATION_SETUP, before confirmation)
+  // Stored as E.164 strings. The owner's own phone is always saved as primary at activation.
+  notificationNumbers?: string[];
 }
 
 // ─── Required info fields — all must be present before advancing ──────────────
@@ -325,6 +331,9 @@ export async function handleVendorOnboarding(
       break;
     case 'PAYMENT_SETUP':
       await handlePaymentSetup(phone, message, vendor, session, data);
+      break;
+    case 'NOTIFICATION_SETUP':
+      await handleNotificationSetup(phone, message, vendor, session, data);
       break;
     case 'CONFIRMATION':
       await handleConfirmation(phone, message, vendor, session, data);
@@ -1359,17 +1368,12 @@ async function handlePaymentSetup(
         return;
       }
 
-      // paystack-only — advance to confirmation
-      const paystackNextStep = (newData.vendorMode === 'support') ? 'SUPPORT_CONFIRMATION' : 'CONFIRMATION';
+      // paystack-only — advance to notification numbers step
       await prisma.vendorSetupSession.update({
         where: { id: session.id },
-        data: { step: paystackNextStep, collectedData: newData as unknown as PrismaJson },
+        data: { step: 'NOTIFICATION_SETUP', collectedData: newData as unknown as PrismaJson },
       });
-      if (newData.vendorMode === 'support') {
-        await showSupportConfirmation(phone, vendor, newData as unknown as import('./support-onboarding.service').SupportCollectedData);
-      } else {
-        await showConfirmation(phone, vendor.id, newData);
-      }
+      await showNotificationSetup(phone, vendor, newData.notificationNumbers ?? []);
       return;
     }
   }
@@ -1414,10 +1418,9 @@ async function handlePaymentSetup(
 
   // Confirm before saving
   const newData = { ...data, bankName, bankAccountNumber: accountNumber, bankAccountName: accountName };
-  const bankNextStep = (newData.vendorMode === 'support') ? 'SUPPORT_CONFIRMATION' : 'CONFIRMATION';
   await prisma.vendorSetupSession.update({
     where: { id: session.id },
-    data: { step: bankNextStep, collectedData: newData as unknown as PrismaJson },
+    data: { step: 'NOTIFICATION_SETUP', collectedData: newData as unknown as PrismaJson },
   });
 
   await messageQueue.add({
@@ -1435,6 +1438,254 @@ async function handlePaymentSetup(
   });
 }
 
+// ─── Step: NOTIFICATION_SETUP ────────────────────────────────────────────────
+
+/** Show the notification numbers prompt. extraNumbers = E.164 strings already added beyond the owner's own phone. */
+async function showNotificationSetup(
+  phone: string,
+  _vendor: Vendor,
+  extraNumbers: string[],
+): Promise<void> {
+  const displayPhone = phone.replace(/^\+234/, '0');
+  const addedList =
+    extraNumbers.length > 0
+      ? `\n\n📋 *Numbers added so far:*\n` +
+        `1. ${displayPhone} _(you)_\n` +
+        extraNumbers.map((n, i) => `${i + 2}. ${n.replace(/^\+234/, '0')}`).join('\n')
+      : '';
+
+  await messageQueue.add({
+    to: phone,
+    message:
+      `📲 *Order Notification Numbers*\n\n` +
+      `Which number(s) should receive order alerts?\n\n` +
+      `By default we'll use *${displayPhone}* (this number).` +
+      `${addedList}\n\n` +
+      `You can add another number if someone else manages your orders.`,
+    buttons: [
+      { id: 'NOTIF_USE_THIS',  title: '✅ Use this number' },
+      { id: 'NOTIF_ADD_OTHER', title: '➕ Add another'     },
+    ] as InteractiveButton[],
+  });
+}
+
+async function handleNotificationSetup(
+  phone: string,
+  message: string,
+  vendor: Vendor,
+  session: VendorSetupSession,
+  data: CollectedData,
+): Promise<void> {
+  const upper  = message.trim().toUpperCase();
+  const plan   = vendor.plan ?? 'free';
+  const limit  = PLAN_NOTIFICATION_LIMITS[plan] ?? 1;
+  const extra  = data.notificationNumbers ?? [];
+
+  // ── Helper: save numbers and advance to CONFIRMATION or SUPPORT_CONFIRMATION ─
+  async function advanceToConfirmation(numbers: string[]): Promise<void> {
+    const newData  = { ...data, notificationNumbers: numbers };
+    const nextStep = newData.vendorMode === 'support' ? 'SUPPORT_CONFIRMATION' : 'CONFIRMATION';
+    await prisma.vendorSetupSession.update({
+      where: { id: session.id },
+      data:  { step: nextStep, collectedData: newData as unknown as PrismaJson },
+    });
+    if (newData.vendorMode === 'support') {
+      await showSupportConfirmation(
+        phone,
+        vendor,
+        newData as unknown as import('./support-onboarding.service').SupportCollectedData,
+      );
+    } else {
+      await showConfirmation(phone, vendor.id, newData);
+    }
+  }
+
+  // ── Bank confirmation gate (YES / NO after submitting bank details) ──────────
+  // The step transitions here immediately after bank submission so the vendor
+  // confirms their bank details before seeing the notification screen.
+  if (data.bankAccountNumber && !data.bankName?.startsWith('confirmed:')) {
+    if (upper === 'YES') {
+      const newData = { ...data, bankName: `confirmed:${data.bankName}` };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data:  { collectedData: newData as unknown as PrismaJson },
+      });
+      // Bank confirmed — now show the real notification-numbers screen
+      await showNotificationSetup(phone, vendor, newData.notificationNumbers ?? []);
+      return;
+    }
+    if (upper === 'NO') {
+      // Re-enter bank details — step back to PAYMENT_SETUP
+      const newData = { ...data, bankName: undefined, bankAccountNumber: undefined, bankAccountName: undefined };
+      await prisma.vendorSetupSession.update({
+        where: { id: session.id },
+        data:  { step: 'PAYMENT_SETUP', collectedData: newData as unknown as PrismaJson },
+      });
+      await messageQueue.add({
+        to: phone,
+        message:
+          `No problem! Please re-enter your bank details:\n` +
+          `*Bank Name | Account Number | Account Name*\n\n` +
+          `Example: _GTBank | 0123456789 | Mallam Ahmed Suya_`,
+      });
+      return;
+    }
+    // Any other reply — re-show the bank confirmation prompt
+    await messageQueue.add({
+      to: phone,
+      message:
+        `Is this bank information correct?\n` +
+        `🏦 *${data.bankName}*\n` +
+        `💳 ${data.bankAccountNumber}\n` +
+        `👤 ${data.bankAccountName}`,
+      buttons: [
+        { id: 'YES', title: '✅ Yes, Correct'     },
+        { id: 'NO',  title: '✏️ Re-enter Details' },
+      ] as InteractiveButton[],
+    });
+    return;
+  }
+
+  // ── NOTIF_USE_THIS / NOTIF_SKIP — advance with owner's number (+ any extras) ─
+  if (upper === 'NOTIF_USE_THIS' || upper === 'NOTIF_SKIP') {
+    const finalNumbers = Array.from(new Set([phone, ...extra]));
+    await advanceToConfirmation(finalNumbers);
+    return;
+  }
+
+  // ── NOTIF_ADD_OTHER — check limit then prompt for the number ────────────────
+  if (upper === 'NOTIF_ADD_OTHER') {
+    const currentCount = 1 + extra.length; // owner + already-collected extras
+    if (currentCount >= limit) {
+      const planLabel  = capitalise(plan);
+      const limitLabel = limit === 1 ? '1 number' : `${limit} numbers`;
+      await messageQueue.add({
+        to: phone,
+        message:
+          `You're on the *${planLabel} plan* which allows ${limitLabel}.\n\n` +
+          `• *Growth plan* (${PLAN_UPGRADE_PRICING.growth}) — up to 3 numbers\n` +
+          `• *Pro plan* (${PLAN_UPGRADE_PRICING.pro}) — unlimited numbers\n\n` +
+          `Reply *UPGRADE* to learn more, or tap *Skip* to continue.`,
+        buttons: [
+          { id: 'NOTIF_UPGRADE', title: '🚀 Upgrade Plan' },
+          { id: 'NOTIF_SKIP',    title: '⏭️ Skip'         },
+        ] as InteractiveButton[],
+      });
+      return;
+    }
+    await messageQueue.add({
+      to: phone,
+      message:
+        `Send the WhatsApp number to add:\n` +
+        `_Format: *08012345678* or *+2348012345678*_\n\n` +
+        `This number will also receive order alerts.`,
+    });
+    return;
+  }
+
+  // ── NOTIF_UPGRADE / UPGRADE — show plan details ─────────────────────────────
+  if (upper === 'NOTIF_UPGRADE' || upper === 'UPGRADE') {
+    await messageQueue.add({
+      to: phone,
+      message:
+        `💳 *Pingmart Plans*\n\n` +
+        `🆓 *Free* — 1 notification number\n` +
+        `📈 *Growth* (${PLAN_UPGRADE_PRICING.growth}) — up to 3 numbers\n` +
+        `🚀 *Pro* (${PLAN_UPGRADE_PRICING.pro}) — unlimited numbers\n\n` +
+        `To upgrade your plan, message our support team.\n\n` +
+        `_Tap Skip to continue with your current plan._`,
+      buttons: [
+        { id: 'NOTIF_SKIP', title: '⏭️ Skip' },
+      ] as InteractiveButton[],
+    });
+    return;
+  }
+
+  // ── Free-text — try to parse as a Nigerian phone number ─────────────────────
+  const rawInput     = message.trim().replace(/\s+/g, '');
+  const isLikelyPhone = /^[+\d]{10,15}$/.test(rawInput);
+
+  if (isLikelyPhone) {
+    const normalised = normalisePhone(rawInput);
+    const isValid    = /^\+234\d{10}$/.test(normalised);
+
+    if (!isValid) {
+      await messageQueue.add({
+        to: phone,
+        message:
+          `That doesn't look like a valid Nigerian number. Please use one of these formats:\n` +
+          `• *08012345678*\n` +
+          `• *+2348012345678*`,
+      });
+      return;
+    }
+
+    // Duplicate check
+    if (normalised === phone || extra.includes(normalised)) {
+      await messageQueue.add({
+        to: phone,
+        message: `That number is already on your list. Send a different number, or tap *Done* to continue.`,
+        buttons: [
+          { id: 'NOTIF_USE_THIS', title: '✅ Done' },
+        ] as InteractiveButton[],
+      });
+      return;
+    }
+
+    // Limit check before adding
+    const currentCount = 1 + extra.length;
+    if (currentCount >= limit) {
+      await messageQueue.add({
+        to: phone,
+        message:
+          `You've reached your plan limit of ${limit} notification number${limit === 1 ? '' : 's'}.\n\n` +
+          `Upgrade to add more, or tap *Done* to continue.`,
+        buttons: [
+          { id: 'NOTIF_UPGRADE',  title: '🚀 Upgrade Plan' },
+          { id: 'NOTIF_USE_THIS', title: '✅ Done'          },
+        ] as InteractiveButton[],
+      });
+      return;
+    }
+
+    // Add the number and persist
+    const newExtra  = [...extra, normalised];
+    const newData   = { ...data, notificationNumbers: newExtra };
+    await prisma.vendorSetupSession.update({
+      where: { id: session.id },
+      data:  { collectedData: newData as unknown as PrismaJson },
+    });
+
+    const displayAdded = normalised.replace(/^\+234/, '0');
+    const displayOwner = phone.replace(/^\+234/, '0');
+    const totalNow     = 1 + newExtra.length;
+    const canAddMore   = totalNow < limit;
+    const listLines    = [
+      `1. ${displayOwner} _(you)_`,
+      ...newExtra.map((n, i) => `${i + 2}. ${n.replace(/^\+234/, '0')}`),
+    ].join('\n');
+
+    await messageQueue.add({
+      to: phone,
+      message:
+        `✅ *${displayAdded}* added!\n\n` +
+        `📋 *Notification numbers:*\n${listLines}`,
+      buttons: canAddMore
+        ? [
+            { id: 'NOTIF_ADD_OTHER', title: '➕ Add another' },
+            { id: 'NOTIF_USE_THIS',  title: '✅ Done'        },
+          ] as InteractiveButton[]
+        : [
+            { id: 'NOTIF_USE_THIS', title: '✅ Done' },
+          ] as InteractiveButton[],
+    });
+    return;
+  }
+
+  // ── Unrecognised — re-show the notification setup screen ────────────────────
+  await showNotificationSetup(phone, vendor, extra);
+}
+
 // ─── Step: CONFIRMATION ───────────────────────────────────────────────────────
 
 async function handleConfirmation(
@@ -1445,17 +1696,6 @@ async function handleConfirmation(
   data: CollectedData,
 ): Promise<void> {
   const upper = message.trim().toUpperCase();
-
-  // "YES" during bank confirmation — show full summary
-  if (upper === 'YES' && data.bankAccountNumber && !data.bankName?.startsWith('confirmed:')) {
-    const newData = { ...data, bankName: `confirmed:${data.bankName}` };
-    await prisma.vendorSetupSession.update({
-      where: { id: session.id },
-      data: { collectedData: newData as unknown as PrismaJson },
-    });
-    await showConfirmation(phone, vendor.id, newData);
-    return;
-  }
 
   // "GO LIVE" — activate the store
   if (upper === 'GO LIVE') {
@@ -1561,12 +1801,21 @@ async function activateStore(
       });
     }
 
-    // 3. Create primary notification number
-    await tx.vendorNotificationNumber.upsert({
-      where: { vendorId_phone: { vendorId: vendor.id, phone } },
-      create: { vendorId: vendor.id, phone, label: 'Main', isPrimary: true, isActive: true },
-      update: { isPrimary: true, isActive: true },
-    });
+    // 3. Save all notification numbers (owner first, then any extras collected in NOTIFICATION_SETUP)
+    const allNotifNumbers = Array.from(new Set([phone, ...(data.notificationNumbers ?? [])]));
+    for (const [idx, notifPhone] of allNotifNumbers.entries()) {
+      await tx.vendorNotificationNumber.upsert({
+        where:  { vendorId_phone: { vendorId: vendor.id, phone: notifPhone } },
+        create: {
+          vendorId:  vendor.id,
+          phone:     notifPhone,
+          label:     idx === 0 ? 'Main' : `Staff ${idx}`,
+          isPrimary: idx === 0,
+          isActive:  true,
+        },
+        update: { isPrimary: idx === 0, isActive: true },
+      });
+    }
 
     // 4. Mark setup session complete
     await tx.vendorSetupSession.update({

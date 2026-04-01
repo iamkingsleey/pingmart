@@ -58,6 +58,9 @@ export interface SupportCollectedData {
   // Shared signals
   storeCodeConflict?: string;
   history: Array<{ role: 'user' | 'assistant'; content: string }>;
+
+  // Notification numbers (collected in NOTIFICATION_SETUP, before confirmation)
+  notificationNumbers?: string[];
 }
 
 // ─── LLM Client ───────────────────────────────────────────────────────────────
@@ -701,12 +704,21 @@ async function activateSupportStore(
       });
     }
 
-    // 4. Create primary notification number
-    await tx.vendorNotificationNumber.upsert({
-      where:  { vendorId_phone: { vendorId: vendor.id, phone } },
-      create: { vendorId: vendor.id, phone, label: 'Main', isPrimary: true, isActive: true },
-      update: { isPrimary: true, isActive: true },
-    });
+    // 4. Save all notification numbers (owner first, then any extras from NOTIFICATION_SETUP)
+    const allNotifNumbers = Array.from(new Set([phone, ...(data.notificationNumbers ?? [])]));
+    for (const [idx, notifPhone] of allNotifNumbers.entries()) {
+      await tx.vendorNotificationNumber.upsert({
+        where:  { vendorId_phone: { vendorId: vendor.id, phone: notifPhone } },
+        create: {
+          vendorId:  vendor.id,
+          phone:     notifPhone,
+          label:     idx === 0 ? 'Main' : `Staff ${idx}`,
+          isPrimary: idx === 0,
+          isActive:  true,
+        },
+        update: { isPrimary: idx === 0, isActive: true },
+      });
+    }
 
     // 5. Mark setup session complete
     await tx.vendorSetupSession.update({
