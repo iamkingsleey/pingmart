@@ -57,3 +57,11 @@ export const CLOUDINARY_DIGITAL_FOLDER = 'orb/digital-products';
 export const CLOUDINARY_COVER_FOLDER = 'orb/covers';
 /** Max file size for digital product upload: 100 MB */
 export const MAX_DIGITAL_FILE_SIZE_BYTES = 100 * 1024 * 1024;
+
+// ─── LLM Confidence Thresholds ────────────────────────────────────────────────
+/**
+ * Minimum confidence score (0.0–1.0) required for the global off-script fallback
+ * to intercept a message and reply instead of letting the step-specific parser run.
+ * Raise to be more conservative; lower to catch more edge cases.
+ */
+export const OFFSCRIPT_CONFIDENCE_THRESHOLD = 0.65;

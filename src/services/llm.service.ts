@@ -532,7 +532,167 @@ const VENDOR_FLOW_STEP_DESCRIPTIONS: Record<string, string> = {
  * vendor is simply answering the current question.
  */
 export function mightBeVendorFlowEscape(message: string): boolean {
-  return /\b(instead|actually|wait|sorry|abeg|oya|hold on|different|update price|add product|remove product|my orders|my link|settings|notifications|teach bot|pause|resume|want to|i want|let me|can i|switch)\b/i.test(message);
+  return /\b(instead|actually|wait|sorry|abeg|oya|hold on|different|update price|add product|remove product|my orders|my link|settings|notifications|teach bot|pause|resume|want to|i want|let me|can i|switch|remind me|come back|give me a moment|continue later|one moment|wait small|i go come back|go continue later)\b/i.test(message);
+}
+
+// ─── Pause Intent Detector ────────────────────────────────────────────────────
+
+export interface PauseIntentResult {
+  isPause: boolean;
+  durationMs?: number; // milliseconds until reminder; absent if no time was mentioned
+}
+
+/**
+ * Fast pre-check — avoids an LLM call when the message has no pause signals at all.
+ */
+export function mightBePauseMessage(message: string): boolean {
+  return /\b(moment|later|remind|continue|come back|wait|hold|pause|small small|one minute|1 min|brb|be right back|i go|go come|dey come|return|soon|give me)\b/i.test(message);
+}
+
+/**
+ * Classifies whether a vendor's message is a pause/defer/remind-me request,
+ * and extracts the requested delay duration when a time is mentioned.
+ *
+ * Fails safe — returns { isPause: false } on any error.
+ */
+export async function detectPauseIntent(message: string): Promise<PauseIntentResult> {
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 80,
+      system:
+        `You classify whether a WhatsApp message from a vendor is a pause/defer request.\n` +
+        `Pause signals include: "give me a moment", "come back later", "I go continue later",\n` +
+        `"remind me", "one minute", "later", "I'll continue soon", "hold on", "wait small",\n` +
+        `"I go come back", "brb", "take a break", "continue tomorrow".\n\n` +
+        `Also detect time references: "in 1 hour", "in 30 minutes", "tomorrow",\n` +
+        `"in 1hr", "in 2 hours", "in 45 minutes", "later today".\n\n` +
+        `Return ONLY valid JSON — no markdown, no explanation:\n` +
+        `{ "isPause": true, "durationMs": 3600000 }   — pause with 1-hour delay\n` +
+        `{ "isPause": true }                           — pause, no time mentioned\n` +
+        `{ "isPause": false }                          — not a pause request\n\n` +
+        `durationMs rules:\n` +
+        `- "in 30 minutes" / "30 mins" → 1800000\n` +
+        `- "in 1 hour" / "in 1hr"      → 3600000\n` +
+        `- "in 2 hours"                → 7200000\n` +
+        `- "tomorrow"                  → 86400000\n` +
+        `- "later" without a time      → omit durationMs entirely\n` +
+        `Return ONLY the JSON object.`,
+      messages: [{ role: 'user', content: message }],
+    });
+    const raw = response.content[0];
+    if (raw.type !== 'text') return { isPause: false };
+    const text = raw.text.trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+    const parsed = JSON.parse(text) as { isPause?: boolean; durationMs?: number };
+    return {
+      isPause: parsed.isPause === true,
+      ...(typeof parsed.durationMs === 'number' && parsed.durationMs > 0
+        ? { durationMs: parsed.durationMs }
+        : {}),
+    };
+  } catch {
+    return { isPause: false };
+  }
+}
+
+// ─── Global Off-Script Fallback Classifier ────────────────────────────────────
+
+export type OffScriptCategory =
+  | 'PAUSE'        // wants to pause, come back later, be reminded
+  | 'QUESTION'     // asking a question about the bot or current step
+  | 'CONFUSION'    // seems lost or unsure what to do
+  | 'FRUSTRATION'  // annoyed or expressing dissatisfaction
+  | 'GREETING'     // hi, hello, good morning, etc.
+  | 'OFF_TOPIC'    // completely unrelated to the current step
+  | 'IN_FLOW';     // actually relevant to the step (just badly formatted)
+
+export interface OffScriptResult {
+  category: OffScriptCategory;
+  confidence: number;  // 0.0–1.0
+  reply?: string;      // warm contextual reply in vendor's language; absent for IN_FLOW
+}
+
+const OFFSCRIPT_VALID_CATEGORIES: OffScriptCategory[] = [
+  'PAUSE', 'QUESTION', 'CONFUSION', 'FRUSTRATION', 'GREETING', 'OFF_TOPIC', 'IN_FLOW',
+];
+
+/**
+ * Classifies a vendor message that the step-specific parser could not process,
+ * and returns a warm contextual reply in the vendor's language.
+ *
+ * Use this as a SAFETY NET only — call it after the fast parser fails, never
+ * instead of it. Returns IN_FLOW when the message looks like valid step input.
+ *
+ * Fails safe — returns { category: 'IN_FLOW', confidence: 0.5 } on any error
+ * so the existing handler always runs as fallback.
+ */
+export async function classifyOffScriptMessage(
+  message: string,
+  stepContext: string,
+  lang: string,
+): Promise<OffScriptResult> {
+  const langInstruction =
+    lang === 'pid' ? 'Respond ONLY in Nigerian Pidgin English.' :
+    lang === 'ig'  ? 'Respond ONLY in Igbo.' :
+    lang === 'yo'  ? 'Respond ONLY in Yorùbá.' :
+    lang === 'ha'  ? 'Respond ONLY in Hausa.' :
+                     'Respond in English.';
+
+  try {
+    const response = await client.messages.create({
+      model: env.ANTHROPIC_MODEL,
+      max_tokens: 200,
+      system:
+        `You are a helper for a Nigerian WhatsApp onboarding bot (Pingmart).\n` +
+        `A vendor is currently in the "${stepContext}".\n` +
+        `They sent a message the bot could not process as expected input for this step.\n\n` +
+        `Classify their intent into EXACTLY ONE category:\n` +
+        `- PAUSE: wants to pause, come back later, or be reminded\n` +
+        `- QUESTION: asking a question about the bot or current step\n` +
+        `- CONFUSION: seems lost, unsure what to do, or asking for guidance\n` +
+        `- FRUSTRATION: annoyed, frustrated, or expressing dissatisfaction\n` +
+        `- GREETING: hi, hello, good morning, or small talk opener\n` +
+        `- OFF_TOPIC: completely unrelated to the current step\n` +
+        `- IN_FLOW: actually relevant to the step (just poorly formatted — let the parser handle it)\n\n` +
+        `If NOT IN_FLOW, also write a SHORT warm reply (1–3 sentences max) that:\n` +
+        `• Acknowledges their message naturally\n` +
+        `• Addresses their concern OR re-explains the current step simply\n` +
+        `• Ends with a gentle re-prompt for what the bot needs next\n` +
+        `• Never sounds robotic or scripted\n` +
+        `${langInstruction}\n\n` +
+        `Return ONLY valid JSON — no markdown, no extra text:\n` +
+        `{ "category": "CONFUSION", "confidence": 0.9, "reply": "No wahala! Send your products like this: Product Name | Price | Category 😊" }\n` +
+        `{ "category": "IN_FLOW", "confidence": 0.85 }`,
+      messages: [{ role: 'user', content: message }],
+    });
+
+    const raw = response.content[0];
+    if (raw.type !== 'text') return { category: 'IN_FLOW', confidence: 0.5 };
+
+    const text = raw.text.trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+
+    const parsed = JSON.parse(text) as { category?: string; confidence?: number; reply?: string };
+    const category = (OFFSCRIPT_VALID_CATEGORIES.includes(parsed.category as OffScriptCategory)
+      ? parsed.category
+      : 'IN_FLOW') as OffScriptCategory;
+    const confidence = typeof parsed.confidence === 'number'
+      ? Math.max(0, Math.min(1, parsed.confidence))
+      : 0.5;
+
+    return {
+      category,
+      confidence,
+      ...(parsed.reply ? { reply: parsed.reply } : {}),
+    };
+  } catch {
+    return { category: 'IN_FLOW', confidence: 0.5 }; // fail safe — never break current flow
+  }
 }
 
 /**

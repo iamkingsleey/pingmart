@@ -27,8 +27,13 @@ import { uploadProductImageBuffer } from '../utils/cloudinary';
 import { logger, maskPhone } from '../utils/logger';
 import { normalisePhone } from '../utils/formatters';
 import { env } from '../config/env';
-import { PLAN_NOTIFICATION_LIMITS, PLAN_UPGRADE_PRICING } from '../config/constants';
-import { detectLanguageSwitchRequest } from './llm.service';
+import { PLAN_NOTIFICATION_LIMITS, PLAN_UPGRADE_PRICING, OFFSCRIPT_CONFIDENCE_THRESHOLD } from '../config/constants';
+import {
+  detectLanguageSwitchRequest,
+  detectPauseIntent,
+  mightBePauseMessage,
+  classifyOffScriptMessage,
+} from './llm.service';
 import { sendTextMessage } from './whatsapp/whatsapp.service';
 import { Language } from '../i18n';
 import { getVendorLang, setVendorLang } from '../utils/vendor-lang';
@@ -223,6 +228,74 @@ const CATEGORY_GREAT_CHOICE: Record<Language, (label: string) => string> = {
   ig:  (label) => `✅ *${label}* — họrọ dị mma!\n\nKwuo m aha ụlọ ọrụ gị na ihe i na-enye. Nye m nkọwa dị mkpụmkpụ. 😊`,
   yo:  (label) => `✅ *${label}* — yàn tó dára!\n\nNísisìyí, kí ni orúkọ iṣòwò rẹ àti ohun tí o nfúnni? Fun mi ní àpèjúwe kékeré. 😊`,
   ha:  (label) => `✅ *${label}* — zaɓin kyau!\n\nYanzun, menene sunan kasuwancin ku da abin da kuke bayarwa? Ba ni ɗan bayani. 😊`,
+};
+
+// ─── Pause / Defer Acknowledgments (ADDING_PRODUCTS) ─────────────────────────
+
+const PAUSE_ACK: Record<Language, string> = {
+  en:  `No problem! Take your time. I'll remind you to continue setting up your catalogue.`,
+  pid: `No wahala! Take your time. I go ping you make you continue.`,
+  ig:  `Ọ dịghị nsogbu! Were oge gị. A ga m echeta gị ka i gaa n'ihu ịhazi akwụkwọ ahịa gị.`,
+  yo:  `Kò sí ìṣòro! Gba àkókò rẹ. Emi yoo rán ọ létí láti bá a lọ pẹlu ṣíṣètò àtòjọ rẹ.`,
+  ha:  `Babu matsala! Dauki lokacin ka. Zan tunatar da kai don ci gaba da saita tallace-tallacen ka.`,
+};
+
+const CATALOGUE_REMINDER: Record<Language, (storeName: string) => string> = {
+  en:  (s) => `👋 Hey! You were setting up your product catalogue for *${s}*. Ready to continue? Just send your products in this format:\n*Product Name | Price | Category*`,
+  pid: (s) => `👋 Hey! You dey set up your catalogue for *${s}*. You don ready? Send your products like this:\n*Product Name | Price | Category*`,
+  ig:  (s) => `👋 Nnọọ! Ị na-edozi akwụkwọ ahịa gị maka *${s}*. I dị njikere ịgaa n'ihu? Ziga ngwaahịa gị n'ụdị a:\n*Product Name | Price | Category*`,
+  yo:  (s) => `👋 Hey! O ń ṣètò àtòjọ rẹ fún *${s}*. Ṣé o ti ṣetan? Fí àwọn ọjà rẹ ránṣẹ́ bíi èyí:\n*Product Name | Price | Category*`,
+  ha:  (s) => `👋 Hey! Kuna saita tallace-tallacen ku na *${s}*. Kuna shirye? Aika kayayyakin ku kamar haka:\n*Product Name | Price | Category*`,
+};
+
+// ─── sendAck message translations ────────────────────────────────────────────
+
+const ACK_THINKING: Record<Language, string> = {
+  en:  `Got that! One moment... ⏳`,
+  pid: `I don hear you! One moment... ⏳`,
+  ig:  `Nwetara m! Otu oge... ⏳`,
+  yo:  `Mo gbọ́! Ìṣẹjú kan... ⏳`,
+  ha:  `Na ji! Mintuna ɗaya... ⏳`,
+};
+
+const ACK_READING_PRODUCTS: Record<Language, string> = {
+  en:  `📋 Got it! Reading your products... one moment!`,
+  pid: `📋 I don see am! Make I read your products... one moment!`,
+  ig:  `📋 Nwetara m! Ka m gụọ ngwaahịa gị... otu oge!`,
+  yo:  `📋 Mo gbọ́! Mo ń ka àwọn ọjà rẹ... ìṣẹjú kan!`,
+  ha:  `📋 Na sami! Ina karanta kayayyakin ka... mintuna ɗaya!`,
+};
+
+const ACK_FETCHING_SHEET: Record<Language, string> = {
+  en:  `🔗 Fetching your sheet... one moment!`,
+  pid: `🔗 I dey fetch your sheet... one moment!`,
+  ig:  `🔗 Na-enweta sheetị gị... otu oge!`,
+  yo:  `🔗 Mo ń gbà sheetì rẹ... ìṣẹjú kan!`,
+  ha:  `🔗 Ina kawo sheetinka... mintuna ɗaya!`,
+};
+
+const ACK_RE_READING_SHEET: Record<Language, string> = {
+  en:  `Re-reading your sheet... ⏳`,
+  pid: `I dey re-read your sheet... ⏳`,
+  ig:  `Na-agụ sheetị gị ọzọ... ⏳`,
+  yo:  `Mo ń tún ka sheetì rẹ... ⏳`,
+  ha:  `Ina sake karanta sheetinka... ⏳`,
+};
+
+const ACK_CHECKING_PHOTO: Record<Language, string> = {
+  en:  `📸 Checking out what you sent...`,
+  pid: `📸 I dey check wetin you send...`,
+  ig:  `📸 Na-elele ihe i ziputara...`,
+  yo:  `📸 Mo ń wo ohun tí o rán...`,
+  ha:  `📸 Ina duba abin da ka aika...`,
+};
+
+const ACK_READING_FILE: Record<Language, string> = {
+  en:  `📊 Got your file! Give me a moment to go through it...`,
+  pid: `📊 I don get your file! Give me one moment make I go through am...`,
+  ig:  `📊 Nwetara m faịlụ gị! Nye m otu oge ka m nyochaa ya...`,
+  yo:  `📊 Mo gbà fáìlì rẹ! Fun mi ní ìṣẹjú kan láti wo inú rẹ̀...`,
+  ha:  `📊 Na sami fayilinka! Ba ni mintuna ɗaya don duba ta...`,
 };
 
 // ─── Low-latency helpers ─────────────────────────────────────────────────────
@@ -470,7 +543,8 @@ export async function handleVendorOnboarding(
 
     if (sourceUrl.includes('docs.google.com/spreadsheets')) {
       // Re-fetch the Google Sheet and show updated preview
-      await sendAck(phone, 'Re-reading your sheet... ⏳');
+      const editedLang = await getVendorLang(phone);
+      await sendAck(phone, ACK_RE_READING_SHEET[editedLang] ?? ACK_RE_READING_SHEET.en);
       await prisma.vendorSetupSession.update({
         where: { id: session.id },
         data: { collectedData: resetData as unknown as PrismaJson },
@@ -571,6 +645,9 @@ async function handleCollectingInfo(
 
   // Keep history to last 20 exchanges (40 messages) to stay within token limits
   const trimmedHistory = history.slice(-40);
+
+  // Acknowledge immediately — COLLECTING_INFO LLM call can take 2–3 s
+  await sendAck(phone, ACK_THINKING[collectingLang] ?? ACK_THINKING.en);
 
   let llmResponse: string;
   try {
@@ -956,6 +1033,49 @@ async function handleAddingProducts(
     data = newData;
   }
 
+  // ── Pause / off-script intent guard ────────────────────────────────────────
+  // Run BEFORE parsing so pause/confusion/question messages are never misread
+  // as failed product entries and never trigger the format guide error.
+  const prodLang = await getVendorLang(phone);
+
+  // Fast pre-check avoids LLM call for clear pipe-formatted or short command inputs
+  const looksLikePause = mightBePauseMessage(message);
+  if (looksLikePause || message.length > 30) {
+    // 1. Pause / defer / remind-me
+    if (looksLikePause) {
+      const pauseCheck = await detectPauseIntent(message);
+      if (pauseCheck.isPause) {
+        await sendAck(phone, PAUSE_ACK[prodLang] ?? PAUSE_ACK.en);
+        if (pauseCheck.durationMs) {
+          const storeName = data.businessName ?? 'your store';
+          await messageQueue.add(
+            { to: phone, message: (CATALOGUE_REMINDER[prodLang] ?? CATALOGUE_REMINDER.en)(storeName) },
+            { delay: pauseCheck.durationMs },
+          );
+        }
+        return;
+      }
+    }
+
+    // 2. General off-script fallback (confusion, questions, greetings, off-topic)
+    // Only run for longer natural-language messages — short entries are likely product names.
+    if (message.length > 30 && !message.includes('|')) {
+      const offScript = await classifyOffScriptMessage(
+        message,
+        'product catalogue upload step — waiting for product name, price and category',
+        prodLang,
+      );
+      if (
+        offScript.category !== 'IN_FLOW' &&
+        offScript.confidence >= OFFSCRIPT_CONFIDENCE_THRESHOLD &&
+        offScript.reply
+      ) {
+        await messageQueue.add({ to: phone, message: offScript.reply });
+        return;
+      }
+    }
+  }
+
   // Try deterministic pipe parser first — no LLM call needed for structured input
   const pipeProducts = tryParsePipeLines(message);
   let extractedProducts: ProductInput[];
@@ -964,7 +1084,9 @@ async function handleAddingProducts(
   if (pipeProducts !== null) {
     extractedProducts = pipeProducts;
   } else {
-    // Natural language — use LLM extraction
+    // Natural language — acknowledge first (LLM extraction takes 1–2 s)
+    await sendAck(phone, ACK_READING_PRODUCTS[prodLang] ?? ACK_READING_PRODUCTS.en);
+
     try {
       const result = await anthropic.messages.create({
         model: env.ANTHROPIC_MODEL,
@@ -1072,7 +1194,8 @@ async function handleSheetImport(
   const csvUrl  = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv`;
 
   // Acknowledge immediately — fetching + parsing a sheet can take 2–4 s
-  await sendAck(phone, '🔗 Fetching your sheet... one moment!');
+  const sheetLang = await getVendorLang(phone);
+  await sendAck(phone, ACK_FETCHING_SHEET[sheetLang] ?? ACK_FETCHING_SHEET.en);
 
   let csvText: string;
   try {
@@ -1270,7 +1393,8 @@ export async function handleVendorProductPhoto(
   const data = (session.collectedData as unknown as CollectedData) ?? { history: [] };
 
   // Acknowledge immediately — CDN download + Claude Vision can take 3–6 s
-  await sendAck(phone, '📸 Checking out what you sent...');
+  const photoLang = await getVendorLang(phone);
+  await sendAck(phone, ACK_CHECKING_PHOTO[photoLang] ?? ACK_CHECKING_PHOTO.en);
 
   // Download from WhatsApp CDN
   let imageBuffer: Buffer;
@@ -1397,7 +1521,8 @@ export async function handleVendorDocument(
   const data = (session.collectedData as unknown as CollectedData) ?? { history: [] };
 
   // Acknowledge immediately — CDN download + parsing can take 1–3 s
-  await sendAck(phone, '📊 Got your file! Give me a moment to go through it...');
+  const docLang = await getVendorLang(phone);
+  await sendAck(phone, ACK_READING_FILE[docLang] ?? ACK_READING_FILE.en);
 
   // 1. Download from Meta CDN
   let fileBuffer: Buffer;

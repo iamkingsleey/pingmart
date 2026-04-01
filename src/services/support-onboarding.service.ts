@@ -20,6 +20,8 @@ import { logger, maskPhone } from '../utils/logger';
 import { env } from '../config/env';
 import { Language } from '../i18n';
 import { getVendorLang } from '../utils/vendor-lang';
+import { classifyOffScriptMessage } from './llm.service';
+import { OFFSCRIPT_CONFIDENCE_THRESHOLD } from '../config/constants';
 
 type PrismaJson = Prisma.InputJsonValue;
 
@@ -528,6 +530,22 @@ export async function handleSupportAddingServices(
   }
 
   if (!extracted || extracted.length === 0) {
+    // Before sending the format-guide error, check if the message is off-script
+    // (pause, confusion, question) and respond contextually in the vendor's language.
+    const offScript = await classifyOffScriptMessage(
+      trimmed,
+      'service listing step — expecting service names and prices',
+      lang,
+    );
+    if (
+      offScript.category !== 'IN_FLOW' &&
+      offScript.confidence >= OFFSCRIPT_CONFIDENCE_THRESHOLD &&
+      offScript.reply
+    ) {
+      await messageQueue.add({ to: phone, message: offScript.reply });
+      return;
+    }
+
     await messageQueue.add({
       to: phone,
       message: sl(SUPPORT_T.svcParseError, lang),
@@ -692,6 +710,21 @@ export async function handleSupportAddingFaqs(
   const extracted = await extractFaqsWithLLM(message);
 
   if (!extracted || extracted.length === 0) {
+    // Before sending the format-guide error, check if the message is off-script.
+    const offScript = await classifyOffScriptMessage(
+      message.trim(),
+      'FAQ setup step — expecting Q: question / A: answer pairs',
+      lang,
+    );
+    if (
+      offScript.category !== 'IN_FLOW' &&
+      offScript.confidence >= OFFSCRIPT_CONFIDENCE_THRESHOLD &&
+      offScript.reply
+    ) {
+      await messageQueue.add({ to: phone, message: offScript.reply });
+      return;
+    }
+
     await messageQueue.add({
       to: phone,
       message: sl(SUPPORT_T.faqParseError, lang),
