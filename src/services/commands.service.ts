@@ -54,6 +54,7 @@ const INTERCEPT_TOKENS = new Set([
   'DASHBOARD',
   'ADD',
   'CATALOGUE',
+  'CATALOGUE SYNC',
   'HOURS',
   'PAUSE',
   'CLOSE SHOP',
@@ -152,6 +153,7 @@ export async function interceptCommand(
     case 'DASHBOARD':
     case 'ADD':
     case 'CATALOGUE':
+    case 'CATALOGUE SYNC':
     case 'HOURS':
     case 'PAUSE':
     case 'CLOSE SHOP':

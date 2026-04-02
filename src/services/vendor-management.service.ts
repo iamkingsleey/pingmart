@@ -48,6 +48,7 @@ import {
 } from './llm.service';
 import { t, Language } from '../i18n';
 import { resolveEscalation } from './escalation.service';
+import { syncVendorCatalogue, getCatalogueStatus } from './catalogue-sync.service';
 
 // ─── Plan Limits ──────────────────────────────────────────────────────────────
 
@@ -239,6 +240,8 @@ async function handleTopLevelCommand(
       return startAddProduct(phone, vendor);
     case 'CATALOGUE':                             // vendor catalogue view
       return showVendorCatalogue(phone, vendor);
+    case 'CATALOGUE SYNC':                        // WhatsApp Commerce catalogue sync
+      return handleCatalogueSync(phone, vendor);
     case 'HOURS':                                 // go directly to hours settings
       return startHoursSettings(phone, vendor);
     case 'PAUSE':                                 // shorthand
@@ -404,6 +407,51 @@ async function showVendorCatalogue(phone: string, vendor: Vendor): Promise<void>
     `📦 *${vendor.businessName} — Products (${products.length})*\n\n${lines.join('\n')}\n\n` +
     `Type *ADD* to add a product or *DASHBOARD* to go back.`,
   );
+}
+
+// ─── CATALOGUE SYNC (WhatsApp Commerce) ──────────────────────────────────────
+
+async function handleCatalogueSync(phone: string, vendor: Vendor): Promise<void> {
+  // Feature is built but not yet activated — gated behind env flag
+  if (!env.WHATSAPP_COMMERCE_ENABLED) {
+    await send(
+      phone,
+      `🔜 *Image Catalogue — Coming Soon!*\n\n` +
+      `We're waiting on Meta Commerce approval to activate this feature.\n\n` +
+      `We'll ping you the moment it goes live! 📲`,
+    );
+    return;
+  }
+
+  // Feature is live — run the sync
+  await send(phone, `🔄 Syncing your catalogue to WhatsApp… this may take a moment.`);
+
+  try {
+    const { synced, failed } = await syncVendorCatalogue(vendor.id);
+    const status = await getCatalogueStatus(vendor.id);
+
+    const lines: string[] = [
+      `✅ *Catalogue Sync Complete*`,
+      ``,
+      `• Products synced:  ${synced}`,
+      failed > 0 ? `• Failed:           ${failed}` : null,
+      `• Total in store:   ${status.totalProducts}`,
+    ].filter(Boolean) as string[];
+
+    if (failed > 0) {
+      lines.push(``, `Some products failed — check that they have images and try again.`);
+    }
+
+    lines.push(``, `Type *DASHBOARD* to go back.`);
+    await send(phone, lines.join('\n'));
+  } catch (err) {
+    logger.error('handleCatalogueSync: sync failed', { vendorId: vendor.id, err });
+    await send(
+      phone,
+      `⚠️ Catalogue sync failed. Please try again in a few minutes.\n\n` +
+      `If the problem persists, contact support.`,
+    );
+  }
 }
 
 // ─── HOURS (settings shortcut) ────────────────────────────────────────────────

@@ -812,6 +812,29 @@ All real-time intent classification uses **Claude Haiku** (`claude-haiku-4-5`) �
 
 ## Planned / Roadmap
 
+### WhatsApp Native Image Catalogue
+**Status:** 🔜 Built — pending Meta Commerce approval
+
+Vendors sync their product catalogue (with images) directly to WhatsApp Commerce Manager. Customers see native product cards with images inside WhatsApp — no external link or website needed.
+
+**How it works:**
+- `CATALOGUE SYNC` command triggers a full sync of all vendor products to Meta via the Graph API
+- Each product is uploaded with name, price (NGN), image, description, and availability status
+- A `product_list` interactive message can then be sent to customers, displaying native WhatsApp product cards
+- Sync state is tracked in the `catalogue_sync_logs` table (`PENDING` → `SYNCED` / `FAILED`)
+
+**To activate after Meta approval:**
+1. Set `WHATSAPP_COMMERCE_ENABLED=true` in environment variables
+2. Set `WHATSAPP_CATALOG_ID` to the catalogue ID from Meta Commerce Manager
+3. Set `whatsappCatalogueId` on each vendor record (via DB or settings flow)
+4. Vendors run `CATALOGUE SYNC` to push their products
+
+**Files:** `src/services/catalogue-sync.service.ts`, `src/services/whatsapp-catalogue-message.service.ts`
+
+⚠️ Do not activate or test — just switch `WHATSAPP_COMMERCE_ENABLED=true` when Meta approves.
+
+---
+
 | Feature | Description | Priority |
 |---|---|---|
 | Facebook Catalog Sync | Pull vendor's existing Meta/Instagram product catalog via Graph API | High |

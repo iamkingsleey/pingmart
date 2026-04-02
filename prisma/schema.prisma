@@ -70,6 +70,10 @@ model Vendor {
   plan               String    @default("free") // free | starter | growth | pro
   subscriptionEndsAt DateTime?
 
+  // ── WhatsApp Commerce (gated: WHATSAPP_COMMERCE_ENABLED) ─────────────
+  // Populated once the vendor's catalogue is created in Meta Commerce Manager.
+  whatsappCatalogueId String?
+
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -90,6 +94,8 @@ model Vendor {
   interactionLogs      InteractionLog[]
   uncertainInteractions UncertainInteraction[]
   orderIntelligence    OrderIntelligence[]
+  // WhatsApp Commerce
+  catalogueSyncLogs    CatalogueSyncLog[]
 
   @@map("vendors")
 }
@@ -145,13 +151,39 @@ model Product {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  vendor     Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  orderItems OrderItem[]
+  vendor            Vendor            @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  orderItems        OrderItem[]
+  catalogueSyncLogs CatalogueSyncLog[]
 
   @@index([vendorId])
   @@index([vendorId, isAvailable])
   @@index([vendorId, productType])
   @@map("products")
+}
+
+// ─── CatalogueSyncLog ────────────────────────────────────────────────────────
+// Tracks the WhatsApp Commerce sync state for each vendor product.
+// Gated behind WHATSAPP_COMMERCE_ENABLED — records are only written when the
+// feature is active. Do not activate until Meta Commerce approval lands.
+
+model CatalogueSyncLog {
+  id                String    @id @default(cuid())
+  vendorId          String
+  productId         String
+  // The product ID assigned by Meta after a successful upload
+  whatsappProductId String?
+  // PENDING | SYNCED | FAILED
+  syncStatus        String    @default("PENDING")
+  lastSyncedAt      DateTime?
+  errorMessage      String?
+  createdAt         DateTime  @default(now())
+
+  vendor  Vendor  @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([vendorId, productId])
+  @@index([vendorId, syncStatus])
+  @@map("catalogue_sync_logs")
 }
 
 // ─── Customer ────────────────────────────────────────────────────────────────

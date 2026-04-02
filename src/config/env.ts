@@ -70,6 +70,12 @@ const envSchema = z.object({
 
   // Vendor WhatsApp number (the bot's number — used for store deep-links)
   VENDOR_WHATSAPP_NUMBER: z.string().optional(),
+
+  // WhatsApp Commerce — set to true ONLY after Meta Commerce permissions are approved.
+  // See FEATURES.md — WhatsApp Native Catalogue section for setup steps.
+  WHATSAPP_COMMERCE_ENABLED: z.string().default('false').transform((v) => v.toLowerCase() === 'true'),
+  // From Meta Commerce Manager — required only when WHATSAPP_COMMERCE_ENABLED=true.
+  WHATSAPP_CATALOG_ID: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
