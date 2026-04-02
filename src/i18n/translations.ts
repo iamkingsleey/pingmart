@@ -168,6 +168,45 @@ export const translations: Record<Language, Record<string, string>> = {
       "We've confirmed your payment for order *{orderId}*, but we ran into a technical issue sending your product automatically.\n\n" +
       'Our team has been alerted and will send your product to you manually within a few minutes.\n\n' +
       "We're very sorry for the inconvenience! 🙏",
+
+    // ── Inline / contextual messages ─────────────────────────────────────
+    store_closed:
+      '🕐 We\'re currently closed. We open at *{opensAt}* (Lagos time).\n\n' +
+      'But feel free to browse and place your order — *{vendorName}* will attend to it as soon as we\'re back open! 😊',
+    confusion_loop:
+      'Hmm, I\'m having a bit of trouble understanding — my apologies! 😅\n\n' +
+      'Let me get a real person to help you out.\n\n' +
+      'Notifying the *{vendorName}* team now...',
+    price_found:
+      '✅ Yes, we have *{name}* — {price}!\n\n' +
+      'Would you like to add it to your cart? Reply *YES* to add it or type *MENU* to see everything.',
+    no_orders_yet:
+      'You haven\'t placed any orders with *{vendorName}* yet.\n\nType *MENU* to start browsing. 😊',
+    order_status_found:
+      '{emoji} *Order {orderId}*\nStatus: *{statusLabel}*\n\n' +
+      'Your order has been confirmed and is being handled by *{vendorName}*. ' +
+      'The vendor will reach out to you directly on WhatsApp to arrange delivery.\n\n' +
+      'If you haven\'t heard back within 24 hours, reply *HELP* and we\'ll flag it for you. 🙏',
+    speak_to_vendor_msg:
+      '🙋 *Need to speak with {vendorName}?*\n\n' +
+      'The team at *{vendorName}* will be notified and will reach out to you shortly.\n\n' +
+      'You can also:\n' +
+      '• Type *ORDER STATUS* to check your latest order\n' +
+      '• Type *HELP* for all available commands\n' +
+      '• Type *MENU* to continue shopping',
+    reorder_loaded:
+      'Perfect! I\'ve loaded your last order: 🛒\n\n{cartLines}\n\nTotal: *{total}*\n\nReply *DONE* to checkout or *CLEAR* to start fresh.',
+    multi_cart_header: '🛒 Added to your cart:',
+    multi_cart_not_found_nums: '❌ Item(s) *{nums}* not found in the catalogue — skipped.',
+    multi_cart_footer_total: '💰 Cart total: *{total}*\n\nKeep adding items or type *DONE* to checkout.',
+    multi_order_not_found: '❌ Sorry, we don\'t have: {names}',
+    multi_order_footer: 'Reply *DONE* to checkout, keep adding items, or *CART* to review.',
+    welcome_back_reorder:
+      '👋 Welcome back, {name}! Great to see you again at *{vendorName}* 🛍️\n\n' +
+      'Your last order: {itemSummary} ({total})\n\n' +
+      'Want the same again? Reply *YES* to reorder instantly\n' +
+      'or *MENU* to browse everything 😊',
+    vendor_dashboard_welcome: '👋 Welcome back, *{businessName}*!\n\nWhat would you like to do?',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -289,6 +328,45 @@ export const translations: Record<Language, Record<string, string>> = {
       'We don confirm your payment for order *{orderId}*, but wahala happen and we no fit send your product automatic.\n\n' +
       'Our team don get alert and dem go send your product manually for few minutes.\n\n' +
       'Sorry for the inconvenience! 🙏',
+
+    // ── Inline / contextual messages ─────────────────────────────────────
+    store_closed:
+      '🕐 Shop don close for now. We go open by *{opensAt}* (Lagos time).\n\n' +
+      'But you fit browse and place order — *{vendorName}* go attend to am when we open! 😊',
+    confusion_loop:
+      'Hmm, I dey find am hard to understand — sorry! 😅\n\n' +
+      'Make I call real person to help you.\n\n' +
+      'I dey inform *{vendorName}* team now...',
+    price_found:
+      '✅ Yes, we get *{name}* — {price}!\n\n' +
+      'You wan add am for cart? Reply *YES* to add or type *MENU* to see everything.',
+    no_orders_yet:
+      'You never place any order with *{vendorName}* yet.\n\nType *MENU* to start browse. 😊',
+    order_status_found:
+      '{emoji} *Order {orderId}*\nStatus: *{statusLabel}*\n\n' +
+      'Your order don confirm and *{vendorName}* dey handle am. ' +
+      'The vendor go reach you for WhatsApp to arrange delivery.\n\n' +
+      'If you never hear back for 24 hours, reply *HELP* and we go flag am for you. 🙏',
+    speak_to_vendor_msg:
+      '🙋 *You wan talk to {vendorName}?*\n\n' +
+      '*{vendorName}* team go get alert and dem go reach you shortly.\n\n' +
+      'You fit also:\n' +
+      '• Type *ORDER STATUS* to check your latest order\n' +
+      '• Type *HELP* for all commands\n' +
+      '• Type *MENU* to continue shop',
+    reorder_loaded:
+      'Perfect! I don load your last order: 🛒\n\n{cartLines}\n\nTotal: *{total}*\n\nReply *DONE* to checkout or *CLEAR* to start fresh.',
+    multi_cart_header: '🛒 See wetin we add for your cart:',
+    multi_cart_not_found_nums: '❌ Item(s) *{nums}* no dey for catalogue — we skip am.',
+    multi_cart_footer_total: '💰 Cart total: *{total}*\n\nYou fit add more or type *DONE* to checkout.',
+    multi_order_not_found: '❌ Sorry, we no get: {names}',
+    multi_order_footer: 'Reply *DONE* to checkout, add more items, or *CART* to review.',
+    welcome_back_reorder:
+      '👋 Welcome back, {name}! Na glad make we see you again for *{vendorName}* 🛍️\n\n' +
+      'Your last order: {itemSummary} ({total})\n\n' +
+      'You wan do same thing again? Reply *YES* to reorder sharp sharp\n' +
+      'or *MENU* to see everything 😊',
+    vendor_dashboard_welcome: '👋 Welcome back, *{businessName}*!\n\nWetin you want do?',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -414,6 +492,45 @@ export const translations: Record<Language, Record<string, string>> = {
       'Ekwadoro anyị ụgwọ gị maka iwu *{orderId}*, mana ihe nsogbu mere na anyị enweghị ike iziga ngwaahịa gị na-akpaghị aka.\n\n' +
       'Anyị ọcha ma ha ga-eziga ngwaahịa gị n\'aka n\'ime nkeji ole na ole.\n\n' +
       'Ndo maka ihe a! 🙏',
+
+    // ── Inline / contextual messages ─────────────────────────────────────
+    store_closed:
+      '🕐 Ụlọ ahịa mechiri ugbu a. Anyị ga-emeghe na *{opensAt}* (oge Lagos).\n\n' +
+      'Mana ị nwere ike ịgwa ahịa ma tinye iwu — *{vendorName}* ga-elekọta ya ozugbo anyị emegheghị! 😊',
+    confusion_loop:
+      'Hmm, ọ na-esi m ike ịghọta — ndo! 😅\n\n' +
+      'Ka m kpọọ onye ọzọ ya iji nyere gị aka.\n\n' +
+      'A na m ịkọ ndị *{vendorName}* ugbu a...',
+    price_found:
+      '✅ Ee, anyị nwere *{name}* — {price}!\n\n' +
+      'Ị chọrọ itinye ya na cart? Zaghachi *YES* iji tinye ya ma ọ bụ tinye *MENU* ịhụ ihe niile.',
+    no_orders_yet:
+      'Ị adabeghị iwu ọ bụla na *{vendorName}* ka ugbu a.\n\nTinye *MENU* ịmalite igwa ahịa. 😊',
+    order_status_found:
+      '{emoji} *Iwu {orderId}*\nOdodo: *{statusLabel}*\n\n' +
+      'Emeziri iwu gị ma *{vendorName}* na-elekọta ya. ' +
+      'Onye ọrụ ahịa ga-akpọtụrụ gị ozugbo na WhatsApp iji haziri nnyefe.\n\n' +
+      'Ọ bụrụ na ị anụchaghi azịza n\'ime awa 24, zaghachi *HELP* anyị ga-egosi ya maka gị. 🙏',
+    speak_to_vendor_msg:
+      '🙋 *Ị chọrọ ikwu okwu na {vendorName}?*\n\n' +
+      'A ga-ịkọ ndị *{vendorName}* ma ha ga-akpọtụrụ gị n\'oge obere.\n\n' +
+      'Ị nwekwara ike:\n' +
+      '• Tinye *ORDER STATUS* ịlele iwu gị ikpeazụ\n' +
+      '• Tinye *HELP* maka iwu niile dị n\'ike\n' +
+      '• Tinye *MENU* ịgwa ahịa n\'ihu',
+    reorder_loaded:
+      'O dị mma! Ebutara m iwu gị ikpeazụ: 🛒\n\n{cartLines}\n\nNdị ọnụ: *{total}*\n\nZaghachi *DONE* ịchekwa ma ọ bụ *CLEAR* ịmalite ọzọ.',
+    multi_cart_header: '🛒 Etinyere na cart gị:',
+    multi_cart_not_found_nums: '❌ Ihe(s) *{nums}* adịghị na catalogue — a wefuo ya.',
+    multi_cart_footer_total: '💰 Cart nchịkọta: *{total}*\n\nNọrọ itinye ihe ma ọ bụ tinye *DONE* ịchekwa.',
+    multi_order_not_found: '❌ Ndo, anyị enweghị: {names}',
+    multi_order_footer: 'Zaghachi *DONE* ịchekwa, tinye ihe ọzọ, ma ọ bụ *CART* ịlele.',
+    welcome_back_reorder:
+      '👋 Nabata ọzọ, {name}! Anyị na-ekwusi ike ịhụ gị na *{vendorName}* 🛍️\n\n' +
+      'Iwu gị ikpeazụ: {itemSummary} ({total})\n\n' +
+      'Ị chọrọ iweghachi ya? Zaghachi *YES* ịwere ya ozugbo\n' +
+      'ma ọ bụ *MENU* ịhụ ihe niile 😊',
+    vendor_dashboard_welcome: '👋 Nabata ọzọ, *{businessName}*!\n\nGịnị chọrọ ime?',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -540,6 +657,45 @@ export const translations: Record<Language, Record<string, string>> = {
       'A ti jẹ́rìísí sísanwó rẹ fún àṣẹ *{orderId}*, ṣùgbọ́n a ṣọngbẹ ìṣòro kan nígbà tí a fẹ́ fi ọjà rẹ ránṣẹ fúnrarẹ.\n\n' +
       'Àwọn ẹgbẹ́ wa ti gba ìfitónilétí yóò fi ọjà rẹ ránṣẹ fúnra wọn ní ìṣẹ́jú díẹ̀.\n\n' +
       'À ní ìdúróṣinṣin pẹ̀lú ọ! 🙏',
+
+    // ── Inline / contextual messages ─────────────────────────────────────
+    store_closed:
+      '🕐 Ìdúró àjọ wa ní báyìí. A ó ṣí ní *{opensAt}* (àkókò Lagos).\n\n' +
+      'Ṣùgbọ́n o ní àǹfàní láti yíká àti fi àṣẹ sí — *{vendorName}* ó wò ó bí a bá ṣí! 😊',
+    confusion_loop:
+      'Hmm, mo nira láti mọ ohun tí o sọ — àárọ̀! 😅\n\n' +
+      'Jẹ́ kí n pè ènìyàn gidi láti ràn ọ lọwọ.\n\n' +
+      'Mo ń ṣe ìwífún àwọn ẹgbẹ́ *{vendorName}* báyìí...',
+    price_found:
+      '✅ Bẹ́ẹ̀ni, a ní *{name}* — {price}!\n\n' +
+      'Ṣé o fẹ́ fi í sínú bò rẹ? Dáhùn *YES* láti fi í sí tàbí tẹ *MENU* láti rí gbogbo ohun.',
+    no_orders_yet:
+      'O kò tí ì fi àṣẹ kankan pẹ̀lú *{vendorName}* rí.\n\nTẹ *MENU* láti bẹ̀rẹ̀ yíká. 😊',
+    order_status_found:
+      '{emoji} *Àṣẹ {orderId}*\nÌpò: *{statusLabel}*\n\n' +
+      'A ti jẹ́rìísí àṣẹ rẹ àti *{vendorName}* ń ṣe é. ' +
+      'Ọjà ó kàn sí ọ ní tààràtà lórí WhatsApp láti ṣètò ifiránṣẹ.\n\n' +
+      'Tí o kò bá gbọ́ padà ní àárọ̀ 24, dáhùn *HELP* a ó fi àmì sí fún ọ. 🙏',
+    speak_to_vendor_msg:
+      '🙋 *Ṣé o fẹ́ sọ̀rọ̀ pẹ̀lú {vendorName}?*\n\n' +
+      'Àwọn ẹgbẹ́ *{vendorName}* ó gba ìwífún tí wọn ó sì kàn sí ọ ní kíá.\n\n' +
+      'O tún lè:\n' +
+      '• Tẹ *ORDER STATUS* láti ṣàyẹ̀wò àṣẹ rẹ tó kọjá\n' +
+      '• Tẹ *HELP* fún gbogbo àṣẹ tó wà\n' +
+      '• Tẹ *MENU* láti tẹ̀síwájú ràkòkò',
+    reorder_loaded:
+      'O dára! Mo ti gbe àṣẹ rẹ tó kọjá wọlé: 🛒\n\n{cartLines}\n\nÀpapọ̀: *{total}*\n\nDáhùn *DONE* láti sanwó tàbí *CLEAR* láti bẹ̀rẹ̀ ìgbà tuntun.',
+    multi_cart_header: '🛒 A fi wọn sínú bò rẹ:',
+    multi_cart_not_found_nums: '❌ Ohun(s) *{nums}* kò sí nínú catalogue — a gbàdé rẹ̀.',
+    multi_cart_footer_total: '💰 Àpapọ̀ bò: *{total}*\n\nTẹ̀síwájú fí ohun sínú tàbí tẹ *DONE* láti sanwó.',
+    multi_order_not_found: '❌ Ẹ̀jọ́, a kò ní: {names}',
+    multi_order_footer: 'Dáhùn *DONE* láti sanwó, fi ohun ṣàfikún, tàbí *CART* láti ṣàyẹ̀wò.',
+    welcome_back_reorder:
+      '👋 Káàbọ̀ padà, {name}! A dúpẹ́ láti rí ọ ní *{vendorName}* 🛍️\n\n' +
+      'Àṣẹ rẹ tó kọjá: {itemSummary} ({total})\n\n' +
+      'Ṣé o fẹ́ tún bẹ̀rẹ̀ bẹ́ẹ̀? Dáhùn *YES* láti tún bẹ̀sẹ̀ ní kíákíá\n' +
+      'tàbí *MENU* láti rí gbogbo ohun 😊',
+    vendor_dashboard_welcome: '👋 Káàbọ̀ padà, *{businessName}*!\n\nKíni o fẹ́ ṣe?',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -665,5 +821,44 @@ export const translations: Record<Language, Record<string, string>> = {
       'Mun tabbatar da biyan kuɗin ka na oda *{orderId}*, amma mun sami matsalar fasaha yayin aika kayan ka kai tsaye.\n\n' +
       "An sanar da tawagar mu kuma za su aika kayan ka da hannun su a cikin 'yan mintuna.\n\n" +
       'Yin haƙuri da damuwa! 🙏',
+
+    // ── Inline / contextual messages ─────────────────────────────────────
+    store_closed:
+      '🕐 Kantin ya rufe a yanzu. Za mu buɗe da *{opensAt}* (lokacin Lagos).\n\n' +
+      'Amma zaka iya duba ka sanya oda — *{vendorName}* zai kulawa da shi da zarar mun buɗe! 😊',
+    confusion_loop:
+      'Hmm, ina da wuyan fahimtar abin da kake cewa — yi haƙuri! 😅\n\n' +
+      'Bari in kira mutum na gaskiya don taimaka maka.\n\n' +
+      'Ina sanar da tawagar *{vendorName}* yanzu...',
+    price_found:
+      '✅ Ee, muna da *{name}* — {price}!\n\n' +
+      'Kuna so ku ƙara zuwa kwandon ku? Amsa *YES* don ƙara ko tẹ *MENU* don ganin komai.',
+    no_orders_yet:
+      'Ba ka iya oda kowane abu tare da *{vendorName}* har yanzu.\n\nTẹ *MENU* don fara duba. 😊',
+    order_status_found:
+      '{emoji} *Oda {orderId}*\nMatsayi: *{statusLabel}*\n\n' +
+      'An tabbatar da oda ka kuma *{vendorName}* yana kulawa da shi. ' +
+      'Mai siyarwa zai tuntuɓe ka kai tsaye a WhatsApp don shirya isar da kaya.\n\n' +
+      'Idan ba ka ji komawa cikin awanni 24, amsa *HELP* mu nuna shi a gare ka. 🙏',
+    speak_to_vendor_msg:
+      '🙋 *Kuna so ku yi magana da {vendorName}?*\n\n' +
+      'Tawagar *{vendorName}* za a sanar kuma za su tuntuɓe ku nan da nan.\n\n' +
+      'Kuna kuma iya:\n' +
+      '• Tẹ *ORDER STATUS* don duba oda ka na ƙarshe\n' +
+      '• Tẹ *HELP* don duk umarni masu yiwuwa\n' +
+      '• Tẹ *MENU* don ci gaba da siyayya',
+    reorder_loaded:
+      'Kyau! Na ɗauki oda ka na ƙarshe: 🛒\n\n{cartLines}\n\nJumla: *{total}*\n\nAmsa *DONE* don biya ko *CLEAR* don fara sabon.',
+    multi_cart_header: '🛒 An ƙara zuwa kwandon ka:',
+    multi_cart_not_found_nums: '❌ Kaya *{nums}* ba a samun su cikin catalogue — an tsallake su.',
+    multi_cart_footer_total: '💰 Jimillar kwando: *{total}*\n\nKa ci gaba da ƙara kaya ko tẹ *DONE* don biya.',
+    multi_order_not_found: '❌ Hakuri, ba mu da: {names}',
+    multi_order_footer: 'Amsa *DONE* don biya, ƙara kaya, ko *CART* don duba.',
+    welcome_back_reorder:
+      '👋 Maraba da dawowa, {name}! Muna farin ciki mu gan ka a *{vendorName}* 🛍️\n\n' +
+      'Oda ka na ƙarshe: {itemSummary} ({total})\n\n' +
+      'Kuna so ku maimaita shi? Amsa *YES* don sake oda nan take\n' +
+      'ko *MENU* don ganin komai 😊',
+    vendor_dashboard_welcome: '👋 Maraba da dawowa, *{businessName}*!\n\nMene ne kake so yi?',
   },
 };

@@ -36,7 +36,7 @@ import { customerRepository } from '../repositories/customer.repository';
 import { logger, maskPhone } from '../utils/logger';
 import { ConversationState, SessionData } from '../types';
 import { formatNaira } from '../utils/formatters';
-import { Language } from '../i18n';
+import { t, Language } from '../i18n';
 import { resolveStoreVocabulary, applyVocabulary } from '../utils/store-vocabulary';
 import { appendToHistory, getHistory } from '../utils/conversationHistory';
 import {
@@ -411,7 +411,25 @@ export async function routeIncomingMessage(
     return;
   }
 
-  // ── 8. Unknown sender — language selection first, then shop/sell ─────────
+  // ── 8. Unknown sender — check DB before showing language selection ─────────
+  // A returning customer whose session expired (e.g. next-day visit) has no
+  // active ConversationSession but DOES have a Customer record with their
+  // language already saved. Skip language selection for them and go straight
+  // to the shop/sell screen using their saved language.
+  const returningCustomer = await prisma.customer.findUnique({
+    where: { whatsappNumber: senderPhone },
+    select: { language: true, languageSet: true },
+  });
+  if (returningCustomer?.languageSet && returningCustomer.language) {
+    const savedLang = returningCustomer.language as Language;
+    logger.info('Router → returning customer (no active session), skipping language selection', {
+      from: maskPhone(senderPhone),
+      language: savedLang,
+    });
+    await showShopOrSellScreen(senderPhone, savedLang);
+    return;
+  }
+
   logger.info('Router → unknown sender, showing language selection', { from: maskPhone(senderPhone) });
   await showLanguageSelectionScreen(senderPhone);
 }
@@ -609,13 +627,11 @@ async function startCustomerSession(phone: string, vendor: Vendor): Promise<void
           cart: [],
           awaitingReorderConfirmation: true,
         });
+        const custLang = (customer.language ?? 'en') as Language;
         await messageQueue.add({
           to: phone,
           message: applyVocabulary(
-            `👋 Welcome back, ${name}! Great to see you again at *${vendor.businessName}* 🛍️\n\n` +
-            `Your last order: ${itemSummary} (${total})\n\n` +
-            `Want the same again? Reply *YES* to reorder instantly\n` +
-            `or *MENU* to browse everything 😊`,
+            t('welcome_back_reorder', custLang, { name, vendorName: vendor.businessName, itemSummary, total }),
             resolveStoreVocabulary(vendor.businessType),
           ),
         });

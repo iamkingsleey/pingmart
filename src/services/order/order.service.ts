@@ -224,7 +224,9 @@ export async function processIncomingMessage(
         // Case B — process the language reply directly.
         const products = await productRepository.findAvailableByVendor(vendor.id);
         if (!products.length) {
-          await enqueue(from, t('no_items_available', 'en', { vendorName: vendor.businessName }));
+          // Language not set yet at this point; use saved language if any, else 'en'
+          const earlyLang = (customer.language as Language | undefined) ?? 'en';
+          await enqueue(from, t('no_items_available', earlyLang, { vendorName: vendor.businessName }));
           return;
         }
         const storeStatusEarly = getStoreStatus(vendor);
@@ -274,11 +276,7 @@ export async function processIncomingMessage(
     // prepend a soft notice then continue straight into the full shopping flow.
     if (!storeStatus.isOpen && (currentState === ConversationState.IDLE || !session)) {
       await offHoursContactRepository.record(from, vendor.id);
-      await enqueue(
-        from,
-        `🕐 We're currently closed. We open at *${storeStatus.opensAt}* (Lagos time).\n\n` +
-        `But feel free to browse and place your order — *${vendor.businessName}* will attend to it as soon as we're back open! 😊`,
-      );
+      await enqueue(from, t('store_closed', language, { opensAt: storeStatus.opensAt ?? '', vendorName: vendor.businessName }));
       // Mark the session so the off-hours flag is carried through to order confirmation
       const closedData: SessionData = { cart: [], orderedWhileClosed: true, storeOpensAt: storeStatus.opensAt };
       await sessionRepository.upsert(from, vendor.id, ConversationState.BROWSING, closedData);
@@ -318,7 +316,7 @@ export async function processIncomingMessage(
             await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, newData);
             await enqueue(
               from,
-              `Perfect! I've loaded your last order: 🛒\n\n${cartLines}\n\nTotal: *${total}*\n\nReply *DONE* to checkout or *CLEAR* to start fresh.`,
+              t('reorder_loaded', language, { cartLines, total }),
             );
             await scheduleSessionTimeout(from, vendor.id, ConversationState.ORDERING, newData);
             return;
@@ -577,10 +575,7 @@ export async function processIncomingMessage(
           });
           await messageQueue.add({
             to: from,
-            message:
-              `Hmm, I'm having a bit of trouble understanding — my apologies! 😅\n\n` +
-              `Let me get a real person to help you out.\n\n` +
-              `Notifying the *${vendor.businessName}* team now...`,
+            message: t('confusion_loop', language, { vendorName: vendor.businessName }),
           });
           await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
           return;
@@ -602,7 +597,7 @@ export async function processIncomingMessage(
         const notFoundData: SessionData = { ...currentData, nlpPendingProductId: undefined, awaitingMenuConfirmation: true };
         await sessionRepository.upsert(from, vendor.id, currentState, notFoundData);
         const productNames = products.map((p) => p.name);
-        const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName, vendor);
+        const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName, vendor, language);
         await enqueue(from, reply);
         await scheduleSessionTimeout(from, vendor.id, currentState, notFoundData);
       } else {
@@ -610,11 +605,7 @@ export async function processIncomingMessage(
         if (product) {
           const newData: SessionData = { ...currentData, nlpPendingProductId: product.id };
           await sessionRepository.upsert(from, vendor.id, currentState, newData);
-          await enqueue(
-            from,
-            `✅ Yes, we have *${product.name}* — ${formatNaira(product.price)}!\n\n` +
-            `Would you like to add it to your cart? Reply *YES* to add it or type *MENU* to see everything.`,
-          );
+          await enqueue(from, t('price_found', language, { name: product.name, price: formatNaira(product.price) }));
           await scheduleSessionTimeout(from, vendor.id, currentState, newData);
         }
       }
@@ -634,7 +625,7 @@ export async function processIncomingMessage(
       };
       await sessionRepository.upsert(from, vendor.id, currentState, notFoundData);
       const productNames = products.map((p) => p.name);
-      const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName, vendor);
+      const reply = await generateNotFoundResponse(rawMessage, productNames, vendor.businessName, vendor, language);
       await enqueue(from, reply);
       await scheduleSessionTimeout(from, vendor.id, currentState, notFoundData);
       // Handled by intent router — do not continue to state machine
@@ -663,10 +654,7 @@ export async function processIncomingMessage(
     if (messageToProcess === 'DELIVERY_INFO' || messageToProcess === 'TRACK_ORDER') {
       const lastOrder = await orderRepository.findLast(customer.id, vendor.id);
       if (!lastOrder) {
-        await enqueue(
-          from,
-          `You haven't placed any orders with *${vendor.businessName}* yet.\n\nType *MENU* to start browsing. 😊`,
-        );
+        await enqueue(from, t('no_orders_yet', language, { vendorName: vendor.businessName }));
       } else {
         const STATUS_EMOJI: Partial<Record<string, string>> = {
           PENDING_PAYMENT: '⏳',
@@ -686,11 +674,7 @@ export async function processIncomingMessage(
         const orderId = formatOrderId(lastOrder.id);
         await enqueue(
           from,
-          `${emoji} *Order ${orderId}*\n` +
-          `Status: *${statusLabel}*\n\n` +
-          `Your order has been confirmed and is being handled by *${vendor.businessName}*. ` +
-          `The vendor will reach out to you directly on WhatsApp to arrange delivery.\n\n` +
-          `If you haven't heard back within 24 hours, reply *HELP* and we'll flag it for you. 🙏`,
+          t('order_status_found', language, { emoji, orderId, statusLabel, vendorName: vendor.businessName }),
         );
       }
       await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
@@ -699,15 +683,7 @@ export async function processIncomingMessage(
 
     // ── Speak to vendor — connect customer with the store directly ────────────
     if (messageToProcess === 'SPEAK_TO_VENDOR') {
-      await enqueue(
-        from,
-        `🙋 *Need to speak with ${vendor.businessName}?*\n\n` +
-        `The team at *${vendor.businessName}* will be notified and will reach out to you shortly.\n\n` +
-        `You can also:\n` +
-        `• Type *ORDER STATUS* to check your latest order\n` +
-        `• Type *HELP* for all available commands\n` +
-        `• Type *MENU* to continue shopping`,
-      );
+      await enqueue(from, t('speak_to_vendor_msg', language, { vendorName: vendor.businessName }));
       // Trigger human escalation so the vendor is alerted
       const lastOrder = await orderRepository.findLast(customer.id, vendor.id);
       await triggerHumanEscalation({
@@ -780,13 +756,11 @@ export async function processIncomingMessage(
       }
 
       const cartTotal = formatNaira(cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0));
-      let response = `🛒 Added to your cart:\n\n${addedLines.join('\n')}`;
+      let response = `${t('multi_cart_header', language)}\n\n${addedLines.join('\n')}`;
       if (notFoundNums.length) {
-        response +=
-          `\n\n❌ Item${notFoundNums.length > 1 ? 's' : ''} *${notFoundNums.join(', ')}* ` +
-          `not found in the catalogue — skipped.`;
+        response += `\n\n${t('multi_cart_not_found_nums', language, { nums: notFoundNums.join(', ') })}`;
       }
-      response += `\n\n💰 Cart total: *${cartTotal}*\n\nKeep adding items or type *DONE* to checkout.`;
+      response += `\n\n${t('multi_cart_footer_total', language, { total: cartTotal })}`;
 
       const newData: SessionData = { ...currentData, cart, activeOrderType: OrderType.PHYSICAL };
       await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, newData);
@@ -873,17 +847,18 @@ export async function processIncomingMessage(
           productNames,
           vendor.businessName,
           vendor,
+          language,
         );
         await enqueue(from, reply);
         await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
         return;
       }
 
-      let response = `\uD83D\uDED2 Added to your cart:\n${addedLines.join('\n')}`;
+      let response = `${t('multi_cart_header', language)}\n${addedLines.join('\n')}`;
       if (notFoundNames.length) {
-        response += `\n\n\u274C Sorry, we don't have: ${notFoundNames.join(', ')}`;
+        response += `\n\n${t('multi_order_not_found', language, { names: notFoundNames.join(', ') })}`;
       }
-      response += `\n\nReply *DONE* to checkout, keep adding items, or *CART* to review.`;
+      response += `\n\n${t('multi_order_footer', language)}`;
 
       const newData: SessionData = { ...currentData, cart, activeOrderType: OrderType.PHYSICAL };
       await sessionRepository.upsert(from, vendor.id, ConversationState.ORDERING, newData);
@@ -1137,7 +1112,7 @@ export async function processIncomingMessage(
     // the state machine (which would just send a generic error).
     if (nlpIntent === 'UNKNOWN' && vendor.businessContext) {
       const productNames = products.map((p) => p.name);
-      const reply = await generateContextAwareAnswer(rawMessage, vendor.businessName, productNames, vendor);
+      const reply = await generateContextAwareAnswer(rawMessage, vendor.businessName, productNames, vendor, language);
       await enqueue(from, reply);
       await scheduleSessionTimeout(from, vendor.id, currentState, currentData);
       return;

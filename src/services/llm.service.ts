@@ -453,14 +453,25 @@ function buildVendorContextBlock(ctx: VendorContext): string {
  *
  * Falls back to a safe static string if the API call fails.
  */
+// Maps a Language code to a clear instruction string for LLM system prompts
+const LANG_INSTRUCTION: Record<string, string> = {
+  en:  'Reply in English.',
+  pid: 'Reply in Nigerian Pidgin English (e.g. "We no get that one", "Abeg try MENU").',
+  ig:  'Reply in Igbo.',
+  yo:  'Reply in Yorùbá.',
+  ha:  'Reply in Hausa.',
+};
+
 export async function generateNotFoundResponse(
   customerMessage: string,
   productNames: string[],
   vendorName: string,
   vendorCtx: VendorContext = {},
+  language = 'en',
 ): Promise<string> {
   const FALLBACK = "Sorry, we don't have that! Type *MENU* to see what we offer. 😊";
   try {
+    const langInstruction = LANG_INSTRUCTION[language] ?? LANG_INSTRUCTION.en;
     const response = await client.messages.create({
       model: env.ANTHROPIC_MODEL,
       max_tokens: 120,
@@ -472,7 +483,8 @@ export async function generateNotFoundResponse(
         `Reply naturally and warmly in 1–2 short sentences explaining you don't sell that.\n` +
         `If it's clearly a different category (e.g. perfumes when you sell food), acknowledge it warmly.\n` +
         `End by inviting them to see the menu.\n` +
-        `Never say "carry that item". Sound human and friendly, not like a system.`,
+        `Never say "carry that item". Sound human and friendly, not like a system.\n` +
+        langInstruction,
       messages: [{ role: 'user', content: customerMessage }],
     });
     const block = response.content[0];
@@ -499,11 +511,13 @@ export async function generateContextAwareAnswer(
   vendorName: string,
   productNames: string[],
   vendorCtx: VendorContext,
+  language = 'en',
 ): Promise<string> {
   const FALLBACK =
     `I'm not sure about that — for the best answer, please contact *${vendorName}* directly. 😊\n\n` +
     `Type *MENU* to browse or order.`;
   try {
+    const langInstruction = LANG_INSTRUCTION[language] ?? LANG_INSTRUCTION.en;
     const response = await client.messages.create({
       model: env.ANTHROPIC_MODEL,
       max_tokens: 200,
@@ -515,7 +529,8 @@ export async function generateContextAwareAnswer(
         `Be friendly and concise (2–3 sentences max). Use Nigerian-friendly language.\n` +
         `If the answer is in the context, give it confidently.\n` +
         `If you genuinely don't know, say so honestly and suggest contacting the vendor directly.\n` +
-        `End with a soft prompt to order or browse if relevant.`,
+        `End with a soft prompt to order or browse if relevant.\n` +
+        langInstruction,
       messages: [{ role: 'user', content: customerMessage }],
     });
     const block = response.content[0];

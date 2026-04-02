@@ -46,7 +46,7 @@ import {
   mightBeVendorFlowEscape,
   detectLanguageSwitchRequest,
 } from './llm.service';
-import { Language } from '../i18n';
+import { t, Language } from '../i18n';
 import { resolveEscalation } from './escalation.service';
 
 // ─── Plan Limits ──────────────────────────────────────────────────────────────
@@ -324,9 +324,16 @@ async function showDashboard(phone: string, vendor: Vendor): Promise<void> {
   const storeToggleId    = vendor.isPaused ? 'RESUME STORE' : 'PAUSE STORE';
   const storeToggleTitle = vendor.isPaused ? '▶️ Resume Store' : '⏸️ Pause Store';
 
+  // Look up the vendor owner's preferred language (stored on their Customer record)
+  const ownerRecord = await prisma.customer.findUnique({
+    where: { whatsappNumber: phone },
+    select: { language: true, languageSet: true },
+  });
+  const vendorLang = (ownerRecord?.languageSet ? ownerRecord.language : null) as Language | null ?? 'en';
+
   await messageQueue.add({
     to: phone,
-    message: `👋 Welcome back, *${vendor.businessName}*!\n\nWhat would you like to do?`,
+    message: t('vendor_dashboard_welcome', vendorLang, { businessName: vendor.businessName }),
     listSections: [
       {
         title: '📦 Products & Orders',
