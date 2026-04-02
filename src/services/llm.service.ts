@@ -1252,7 +1252,14 @@ export async function classifyIntent(
     `- confidence: 1.0=certain, 0.75=likely, 0.5=unsure, 0.0=guessing\n` +
     `- extractedData: include product names, prices, quantities, durations, etc.\n` +
     `- Never say "I don't understand" coldly — always respond like a friendly human assistant\n` +
-    `- continueFlow=false for: pause, confirm that completes a step, deny, cancel, checkout`;
+    `- continueFlow=false for: pause, confirm that completes a step, deny, cancel, checkout\n` +
+    `\n` +
+    `CRITICAL — product selection rule:\n` +
+    `If the message is only numbers or a list of numbers (e.g. "1", "3", "1, 3", "2 and 5", "1 2 3")\n` +
+    `AND the current step is BROWSING, ORDERING, or AWAITING_ITEM_NOTE:\n` +
+    `  → intent MUST be "in_flow", confidence MUST be 1.0\n` +
+    `  → NEVER classify as confusion, frustration, escalation, off_topic, or unknown\n` +
+    `  → These are always product selections, not confusion or random input`;
 
   try {
     const response = await client.messages.create({

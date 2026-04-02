@@ -173,6 +173,18 @@ async function runLLMPipeline(
     getHistory(phone),
   ]);
 
+  // ── Cart number short-circuit ──────────────────────────────────────────────
+  // During catalogue browsing or cart-building, a bare number (or
+  // comma-/and-separated list) is always a product selection — never confusion,
+  // escalation, or off-topic. Bypass the LLM entirely so the product-selection
+  // handler receives the message unmodified.
+  const CART_STEPS = new Set(['BROWSING', 'ORDERING', 'AWAITING_ITEM_NOTE']);
+  const isCartStep = context.step != null && CART_STEPS.has(context.step);
+  const isNumberInput = /^[\d\s,and]+$/i.test(message.trim());
+  if (isCartStep && isNumberInput) {
+    return { shouldContinue: true };
+  }
+
   // Classify intent (Haiku — fast + cheap)
   const classification = await classifyIntent(message, { ...context, history });
 
