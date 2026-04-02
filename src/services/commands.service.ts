@@ -379,7 +379,7 @@ async function handleOwoTestCommand(phone: string, fundRequestId: string | null)
     await send(
       `📵 *OWO Status: NOT_FOUND*\n\n` +
       `Your number is not registered on OWO.\n` +
-      `Download the *Xara app* to get started.`,
+      `You need an active OWO account to use this payment option.`,
     );
     return;
   }
@@ -388,7 +388,7 @@ async function handleOwoTestCommand(phone: string, fundRequestId: string | null)
     await send(
       `⏳ *OWO Status: PENDING_ACTIVATION*\n\n` +
       `Your OWO account is not fully activated yet.\n` +
-      `Complete setup on the *Xara app*.`,
+      `Please complete your OWO account setup to use this payment option.`,
     );
     return;
   }
