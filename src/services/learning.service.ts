@@ -21,6 +21,8 @@
  *   < 0.60 → ask clarifying question + save to UncertainInteractions
  */
 
+import * as fsPromises from 'node:fs/promises';
+import * as path from 'node:path';
 import { MessageType, OrderStatus } from '@prisma/client';
 import { prisma } from '../repositories/prisma';
 import { messageQueue } from '../queues/message.queue';
@@ -289,6 +291,93 @@ export function logOrderIntelligence(params: LogOrderIntelligenceParams): void {
         error: err instanceof Error ? err.message : String(err),
       }),
     );
+}
+
+// ─── Pidgin Learning Queue ────────────────────────────────────────────────────
+
+/**
+ * Logs an unrecognised Nigerian Pidgin phrase for human review.
+ *
+ * Writes to two places simultaneously (fire-and-forget, non-blocking):
+ *   1. DB → `pidgin_learning_log` table (queryable, structured)
+ *   2. File → PIDGIN.md Learning Queue section (human-readable, in the repo)
+ *
+ * Called from interpretMessageWithConfidence when language === 'pid'
+ * and intent === 'UNKNOWN'.
+ */
+export function logPidginPhrase(
+  phrase: string,
+  inferredMeaning: string,
+  context: string,
+  sessionId?: string,
+): void {
+  if (!env.LEARNING_MODE) return;
+
+  // Both writes are fire-and-forget — never block the response path
+  Promise.all([
+    prisma.pidginLearningLog.create({
+      data: {
+        phrase:          phrase.slice(0, 500),
+        inferredMeaning: inferredMeaning.slice(0, 100),
+        context:         context.slice(0, 200),
+        sessionId:       sessionId ?? null,
+        status:          'pending',
+      },
+    }),
+    _appendToPidginMd(phrase, inferredMeaning, context),
+  ]).catch((err) =>
+    logger.warn('logPidginPhrase failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    }),
+  );
+}
+
+/** Inserts a row into the Learning Queue table in PIDGIN.md. */
+async function _appendToPidginMd(
+  phrase: string,
+  inferredMeaning: string,
+  context: string,
+): Promise<void> {
+  const PIDGIN_MD_PATH = path.resolve(__dirname, '../../../pingmart/PIDGIN.md');
+  const EMPTY_PLACEHOLDER = '| *(empty — add as conversations happen)* | | | |';
+
+  try {
+    const content = await fsPromises.readFile(PIDGIN_MD_PATH, 'utf8');
+
+    // Sanitise values for Markdown table (strip pipe characters)
+    const safePhrase  = phrase.replace(/\|/g, '/').slice(0, 80);
+    const safeMeaning = inferredMeaning.replace(/\|/g, '/').slice(0, 40);
+    const safeContext = context.replace(/\|/g, '/').slice(0, 60);
+    const newRow      = `| ${safePhrase} | ${safeMeaning} | ${safeContext} | pending |`;
+
+    let updated: string;
+    if (content.includes(EMPTY_PLACEHOLDER)) {
+      // First entry: replace the placeholder row, keep a blank placeholder after it
+      updated = content.replace(EMPTY_PLACEHOLDER, `${newRow}\n${EMPTY_PLACEHOLDER}`);
+    } else {
+      // Subsequent entries: append before the empty placeholder (or at end of table)
+      updated = content.replace(
+        /(## Learning Queue[\s\S]*?\n\| Status \|\n\|[-| ]+\|\n)/,
+        `$1${newRow}\n`,
+      );
+      if (updated === content) {
+        // Fallback: the placeholder was already replaced — just append to end of table
+        updated = content.replace(
+          /(## Learning Queue[\s\S]*?\n)(---|\n## )/,
+          `$1${newRow}\n$2`,
+        );
+      }
+    }
+
+    if (updated !== content) {
+      await fsPromises.writeFile(PIDGIN_MD_PATH, updated, 'utf8');
+    }
+  } catch (err) {
+    // File write failure is non-fatal — DB write above already captured the data
+    logger.debug('_appendToPidginMd: file write failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // ─── Weekly Summary ───────────────────────────────────────────────────────────

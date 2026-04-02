@@ -2,10 +2,17 @@
  * Support Mode Customer Flow
  *
  * Handles customer interactions with service-based vendors.
- * Customers can: view services, ask questions (FAQ + LLM fallback), book services.
+ * Customers can: view services, ask questions (FAQ + LLM fallback), book services,
+ * and set appointment reminders.
  *
  * Substate is tracked in ConversationSession.sessionData.supportState (string).
  * The ConversationSession.state is set to BROWSING while the customer is active.
+ *
+ * Reminder sub-states (scoped to this flow only):
+ *   REMINDER_PENDING       — 3-button prompt sent; waiting for tap or decline
+ *   REMINDER_CUSTOM_WAIT   — asked "how long before?"; waiting for free-text duration
+ *   REMINDER_TOO_SOON      — appointment is too soon for requested lead-time;
+ *                            waiting for yes/no on suggested shorter time
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { Vendor } from '@prisma/client';
@@ -15,7 +22,20 @@ import { messageQueue } from '../queues/message.queue';
 import { logger, maskPhone } from '../utils/logger';
 import { env } from '../config/env';
 import { formatNaira } from '../utils/formatters';
+import { t, Language } from '../i18n';
 import { ConversationState, SessionData, InteractiveButton, InteractiveListSection } from '../types';
+import {
+  scheduleReminder,
+  cancelBookingReminders as _cancelBookingReminders,
+  parseDurationMinutes,
+  isDeclineIntent,
+  detectReminderIntent,
+  formatMinutes,
+  parseAppointmentDate,
+} from './support-reminder.service';
+
+// Re-export so support-vendor.service.ts can call it without knowing about the reminder service
+export { _cancelBookingReminders as cancelBookingReminders };
 
 // ─── LLM Client ───────────────────────────────────────────────────────────────
 
@@ -26,14 +46,28 @@ const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 interface SupportSessionData {
   role?: 'customer';
   supportState: string;
-  // Booking in progress
+  /** Booking in progress — populated during the BOOKING_* states */
   pendingBooking?: {
     serviceItemId: string;
     serviceRequested: string;
     scheduledDate?: string;
     deliveryAddress?: string;
   };
+  /** Reminder in progress — populated after booking confirmation */
+  pendingReminder?: {
+    bookingId:       string;
+    serviceRequested: string;
+    scheduledDate:   string;
+    vendorName:      string;
+    language:        string;
+    /** ISO string once parsed — cached to avoid a second LLM call */
+    parsedApptTime?: string;
+    /** Suggested minutes for the REMINDER_TOO_SOON state */
+    suggestedMins?:  number;
+  };
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatBookingId(id: string): string {
   return `BK-${id.slice(0, 6).toUpperCase()}`;
@@ -51,6 +85,14 @@ function bookingStatusLabel(status: string): string {
   return labels[status] ?? status;
 }
 
+async function getCustomerLanguage(phone: string): Promise<Language> {
+  const customer = await prisma.customer.findUnique({
+    where:  { whatsappNumber: phone },
+    select: { language: true },
+  });
+  return (customer?.language as Language | undefined) ?? 'en';
+}
+
 // ─── Main Entry Point ─────────────────────────────────────────────────────────
 
 export async function handleSupportCustomerMessage(
@@ -60,8 +102,8 @@ export async function handleSupportCustomerMessage(
 ): Promise<void> {
   // Get or create session
   const session = await sessionRepository.findActive(phone, vendor.id);
-  const data = ((session?.sessionData ?? { cart: [], supportState: '', role: 'customer' }) as unknown) as SupportSessionData;
-  const state = data.supportState ?? '';
+  const data    = ((session?.sessionData ?? { cart: [], supportState: '', role: 'customer' }) as unknown) as SupportSessionData;
+  const state   = data.supportState ?? '';
   const trimmed = message.trim();
   const upper   = trimmed.toUpperCase();
 
@@ -127,10 +169,44 @@ export async function handleSupportCustomerMessage(
       await handleBookingConfirm(phone, upper, vendor, data);
       return;
 
-    default:
+    // ── Reminder sub-states ────────────────────────────────────────────────
+
+    case 'REMINDER_PENDING':
+      await handleReminderPending(phone, upper, trimmed, vendor, data);
+      return;
+
+    case 'REMINDER_CUSTOM_WAIT':
+      await handleReminderCustomWait(phone, trimmed, vendor, data);
+      return;
+
+    case 'REMINDER_TOO_SOON':
+      await handleReminderTooSoon(phone, upper, trimmed, vendor, data);
+      return;
+
+    default: {
+      // ── Mid-flow reminder request (outside REMINDER_PENDING state) ───────
+      // Customer may say "remind me 30 mins before" at any point in the conversation.
+      const intentResult = await detectReminderIntent(trimmed);
+      if (intentResult.isReminder) {
+        // Find their most recent CONFIRMED or PENDING booking with this vendor
+        const recentBooking = await prisma.booking.findFirst({
+          where:   { vendorId: vendor.id, customerPhone: phone, status: { in: ['CONFIRMED', 'PENDING'] } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (recentBooking && recentBooking.scheduledDate) {
+          const lang = await getCustomerLanguage(phone);
+          const customer = await prisma.customer.findUnique({ where: { whatsappNumber: phone }, select: { id: true } });
+          await processMidFlowReminderRequest(
+            phone, vendor, recentBooking, intentResult.durationMins ?? 30, lang, customer?.id,
+          );
+          return;
+        }
+      }
+
       // Unknown message in idle/unknown state — show welcome
       await showSupportWelcome(phone, vendor);
       await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, { cart: [], supportState: '', role: 'customer' });
+    }
   }
 }
 
@@ -145,7 +221,7 @@ export async function showSupportWelcome(phone: string, vendor: Vendor): Promise
     to: phone,
     message: greeting,
     buttons: [
-      { id: 'VIEW_SERVICES', title: '📋 View Services' },
+      { id: 'VIEW_SERVICES', title: '📋 View Services'  },
       { id: 'BOOK_SERVICE',  title: '📅 Book a Service' },
       { id: 'ASK_QUESTION',  title: '💬 Ask a Question' },
     ] as InteractiveButton[],
@@ -156,7 +232,7 @@ export async function showSupportWelcome(phone: string, vendor: Vendor): Promise
 
 async function showServicesList(phone: string, vendor: Vendor): Promise<void> {
   const items = await prisma.serviceItem.findMany({
-    where: { vendorId: vendor.id, isAvailable: true },
+    where:   { vendorId: vendor.id, isAvailable: true },
     orderBy: { createdAt: 'asc' },
   });
 
@@ -171,7 +247,7 @@ async function showServicesList(phone: string, vendor: Vendor): Promise<void> {
   }
 
   const lines = items.map((s) => {
-    const price     = formatNaira(s.price);
+    const price      = formatNaira(s.price);
     const turnaround = s.turnaroundHours
       ? ` · ${s.turnaroundHours < 24 ? `${s.turnaroundHours}h` : `${Math.round(s.turnaroundHours / 24)}d`} turnaround`
       : '';
@@ -192,7 +268,7 @@ async function showServicesList(phone: string, vendor: Vendor): Promise<void> {
 
 async function showServicesForBooking(phone: string, vendor: Vendor): Promise<void> {
   const items = await prisma.serviceItem.findMany({
-    where: { vendorId: vendor.id, isAvailable: true },
+    where:   { vendorId: vendor.id, isAvailable: true },
     orderBy: { createdAt: 'asc' },
   });
 
@@ -220,7 +296,7 @@ async function showServicesForBooking(phone: string, vendor: Vendor): Promise<vo
   await messageQueue.add({
     to: phone,
     message: `📅 *Book a Service*\n\nWhich service would you like to book?`,
-    listSections: sections,
+    listSections:   sections,
     listButtonText: 'Choose Service',
   });
 }
@@ -273,9 +349,7 @@ async function handleBookingDate(
   }
 
   const updatedBooking = { ...data.pendingBooking, scheduledDate: dateText };
-
-  // Check if vendor's service is pickup-based (needs delivery address)
-  const needsAddress = await vendorNeedsPickupAddress(vendor.id);
+  const needsAddress   = await vendorNeedsPickupAddress(vendor.id);
 
   if (needsAddress) {
     await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, {
@@ -283,18 +357,13 @@ async function handleBookingDate(
       supportState: 'BOOKING_ADDRESS',
       pendingBooking: updatedBooking,
     });
-
-    await messageQueue.add({
-      to: phone,
-      message: `📍 Please provide your address or location for this service.`,
-    });
+    await messageQueue.add({ to: phone, message: `📍 Please provide your address or location for this service.` });
   } else {
     await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, {
       ...data as unknown as SessionData,
       supportState: 'BOOKING_CONFIRM',
       pendingBooking: updatedBooking,
     });
-
     await showBookingConfirmation(phone, vendor, updatedBooking);
   }
 }
@@ -326,9 +395,7 @@ async function showBookingConfirmation(
   vendor: Vendor,
   booking: NonNullable<SessionData['pendingBooking']>,
 ): Promise<void> {
-  const addressLine = booking.deliveryAddress
-    ? `📍 Address: ${booking.deliveryAddress}\n`
-    : '';
+  const addressLine = booking.deliveryAddress ? `📍 Address: ${booking.deliveryAddress}\n` : '';
 
   await messageQueue.add({
     to: phone,
@@ -339,8 +406,8 @@ async function showBookingConfirmation(
       `${addressLine}\n` +
       `Shall I send this booking request to *${vendor.businessName}*?`,
     buttons: [
-      { id: 'CONFIRM_BOOKING', title: '✅ Yes, Book It'  },
-      { id: 'CANCEL_BOOKING',  title: '❌ Cancel'        },
+      { id: 'CONFIRM_BOOKING', title: '✅ Yes, Book It' },
+      { id: 'CANCEL_BOOKING',  title: '❌ Cancel'       },
     ] as InteractiveButton[],
   });
 }
@@ -353,10 +420,7 @@ async function handleBookingConfirm(
 ): Promise<void> {
   if (upper === 'CANCEL_BOOKING') {
     await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, { cart: [], supportState: '', role: 'customer' });
-    await messageQueue.add({
-      to: phone,
-      message: `Booking cancelled. 👍 Reply *MENU* to go back.`,
-    });
+    await messageQueue.add({ to: phone, message: `Booking cancelled. 👍 Reply *MENU* to go back.` });
     return;
   }
 
@@ -370,10 +434,11 @@ async function handleBookingConfirm(
     return;
   }
 
-  // Lookup customer name
+  // Lookup customer
   const customer = await prisma.customer.findUnique({ where: { whatsappNumber: phone } });
+  const lang     = (customer?.language as Language | undefined) ?? 'en';
 
-  // Create booking
+  // Create booking record
   const booking = await prisma.booking.create({
     data: {
       vendorId:         vendor.id,
@@ -386,13 +451,25 @@ async function handleBookingConfirm(
     },
   });
 
-  // Clear booking from session
-  await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, { cart: [], supportState: '', role: 'customer' });
+  // ── Set state to REMINDER_PENDING before sending any messages ────────────
+  // (prevents a race condition where customer replies before state is written)
+  await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, {
+    cart:        [],
+    role:        'customer',
+    supportState: 'REMINDER_PENDING',
+    pendingReminder: {
+      bookingId:        booking.id,
+      serviceRequested: booking.serviceRequested,
+      scheduledDate:    booking.scheduledDate ?? '',
+      vendorName:       vendor.businessName,
+      language:         lang,
+    },
+  } as unknown as SessionData);
 
-  const bookingId = formatBookingId(booking.id);
+  const bookingId   = formatBookingId(booking.id);
   const addressLine = booking.deliveryAddress ? `\n📍 Address: ${booking.deliveryAddress}` : '';
 
-  // Confirm to customer
+  // ── Confirm booking to customer ───────────────────────────────────────────
   await messageQueue.add({
     to: phone,
     message:
@@ -404,7 +481,10 @@ async function handleBookingConfirm(
       `Reply *MY BOOKINGS* to check your status anytime.`,
   });
 
-  // Notify vendor via notification numbers
+  // ── Reminder prompt ───────────────────────────────────────────────────────
+  await sendReminderPrompt(phone, lang);
+
+  // ── Notify vendor ─────────────────────────────────────────────────────────
   const notifNumbers = await prisma.vendorNotificationNumber.findMany({
     where: { vendorId: vendor.id, isActive: true },
   });
@@ -424,11 +504,301 @@ async function handleBookingConfirm(
     await messageQueue.add({ to: num.phone, message: vendorMsg });
   }
 
-  logger.info('Booking created', {
-    bookingId: booking.id,
-    vendorId: vendor.id,
-    phone: maskPhone(phone),
+  logger.info('Booking created', { bookingId: booking.id, vendorId: vendor.id, phone: maskPhone(phone) });
+}
+
+// ─── Reminder Flow ────────────────────────────────────────────────────────────
+
+/**
+ * Sends the three-button reminder prompt immediately after booking confirmation.
+ */
+async function sendReminderPrompt(phone: string, lang: Language): Promise<void> {
+  await messageQueue.add({
+    to:      phone,
+    message: t('booking_reminder_prompt', lang),
+    buttons: [
+      { id: 'REMIND_20M',    title: '⏰ 20 mins before' },
+      { id: 'REMIND_1H',     title: '⏰ 1 hour before'  },
+      { id: 'REMIND_CUSTOM', title: '✏️ Custom time'    },
+    ] as InteractiveButton[],
   });
+}
+
+/**
+ * Handles customer response while in REMINDER_PENDING state.
+ * Accepts button taps (REMIND_20M, REMIND_1H, REMIND_CUSTOM) or decline intent.
+ */
+async function handleReminderPending(
+  phone: string,
+  upper: string,
+  trimmed: string,
+  vendor: Vendor,
+  data: SupportSessionData,
+): Promise<void> {
+  const pr = data.pendingReminder;
+  if (!pr) {
+    // Stale state — clear it
+    await clearToIdle(phone, vendor.id);
+    return;
+  }
+
+  if (upper === 'REMIND_20M')   { await attemptScheduleReminder(phone, vendor, data, pr, 20);  return; }
+  if (upper === 'REMIND_1H')    { await attemptScheduleReminder(phone, vendor, data, pr, 60);  return; }
+  if (upper === 'REMIND_CUSTOM') {
+    await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, {
+      ...data as unknown as SessionData,
+      supportState: 'REMINDER_CUSTOM_WAIT',
+    });
+    await messageQueue.add({ to: phone, message: t('booking_reminder_custom_ask', pr.language as Language) });
+    return;
+  }
+
+  // Check for decline intent (no / nah / e no necessary / etc.)
+  const declined = await isDeclineIntent(trimmed);
+  if (declined) {
+    await clearToIdle(phone, vendor.id);
+    await messageQueue.add({ to: phone, message: t('booking_reminder_declined', pr.language as Language) });
+    return;
+  }
+
+  // Unrecognised — re-send prompt
+  await sendReminderPrompt(phone, pr.language as Language);
+}
+
+/**
+ * Handles the customer's free-text duration reply in REMINDER_CUSTOM_WAIT state.
+ * e.g. "45 minutes", "2 hours", "half an hour"
+ */
+async function handleReminderCustomWait(
+  phone: string,
+  trimmed: string,
+  vendor: Vendor,
+  data: SupportSessionData,
+): Promise<void> {
+  const pr = data.pendingReminder;
+  if (!pr) {
+    await clearToIdle(phone, vendor.id);
+    return;
+  }
+
+  const mins = await parseDurationMinutes(trimmed);
+  if (!mins) {
+    // Could not parse — ask again
+    await messageQueue.add({ to: phone, message: t('booking_reminder_custom_ask', pr.language as Language) });
+    return;
+  }
+
+  await attemptScheduleReminder(phone, vendor, data, pr, mins);
+}
+
+/**
+ * Handles the yes/no response for the "too soon" alternative suggestion.
+ * REMIND_ACCEPT_SUGGEST → schedule with suggestedMins
+ * REMIND_DECLINE / decline intent → "No problem!"
+ */
+async function handleReminderTooSoon(
+  phone: string,
+  upper: string,
+  trimmed: string,
+  vendor: Vendor,
+  data: SupportSessionData,
+): Promise<void> {
+  const pr = data.pendingReminder;
+  if (!pr || !pr.suggestedMins) {
+    await clearToIdle(phone, vendor.id);
+    return;
+  }
+
+  if (upper === 'REMIND_ACCEPT_SUGGEST') {
+    await attemptScheduleReminder(phone, vendor, data, pr, pr.suggestedMins);
+    return;
+  }
+
+  if (upper === 'REMIND_DECLINE') {
+    await clearToIdle(phone, vendor.id);
+    await messageQueue.add({ to: phone, message: t('booking_reminder_declined', pr.language as Language) });
+    return;
+  }
+
+  const declined = await isDeclineIntent(trimmed);
+  if (declined) {
+    await clearToIdle(phone, vendor.id);
+    await messageQueue.add({ to: phone, message: t('booking_reminder_declined', pr.language as Language) });
+    return;
+  }
+
+  // Unrecognised — re-send the alternative offer
+  await sendTooSoonPrompt(phone, pr.language as Language, pr.suggestedMins, pr.suggestedMins);
+}
+
+/**
+ * Calls scheduleReminder and handles every possible outcome with the right message.
+ * Pre-parsed apptTime (if cached in session) is passed through to avoid double LLM calls.
+ */
+async function attemptScheduleReminder(
+  phone: string,
+  vendor: Vendor,
+  data: SupportSessionData,
+  pr: NonNullable<SupportSessionData['pendingReminder']>,
+  durationMins: number,
+): Promise<void> {
+  const lang         = pr.language as Language;
+  const parsedApptTime = pr.parsedApptTime ? new Date(pr.parsedApptTime) : undefined;
+
+  const customer = await prisma.customer.findUnique({ where: { whatsappNumber: phone }, select: { id: true } });
+
+  const result = await scheduleReminder({
+    bookingId:      pr.bookingId,
+    customerId:     customer?.id,
+    customerPhone:  phone,
+    serviceName:    pr.serviceRequested,
+    businessName:   pr.vendorName,
+    scheduledDate:  pr.scheduledDate,
+    durationMins,
+    language:       pr.language,
+    parsedApptTime,
+  });
+
+  if (result.ok) {
+    // Success — confirm and return to idle
+    await clearToIdle(phone, vendor.id);
+    await messageQueue.add({
+      to:      phone,
+      message: t('booking_reminder_set', lang, {
+        reminderTime: result.formattedReminderTime,
+        serviceName:  pr.serviceRequested,
+      }),
+    });
+    return;
+  }
+
+  switch (result.reason) {
+    case 'parse_failed': {
+      // Could not parse scheduledDate → ask for exact time and fall back to custom flow
+      await clearToIdle(phone, vendor.id);
+      await messageQueue.add({ to: phone, message: t('booking_reminder_parse_fail', lang) });
+      return;
+    }
+
+    case 'appointment_passed': {
+      await clearToIdle(phone, vendor.id);
+      await messageQueue.add({ to: phone, message: t('booking_reminder_past', lang) });
+      return;
+    }
+
+    case 'too_soon': {
+      const { minsUntilAppt, suggestedMins } = result;
+
+      // Cache the parsed appt time (it was successfully parsed before the too-soon check)
+      // We re-parse here but ideally the service returns it. For now, parse and cache.
+      const freshParsed = parsedApptTime
+        ?? (pr.scheduledDate ? await parseAppointmentDate(pr.scheduledDate) : null);
+
+      await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, {
+        ...data as unknown as SessionData,
+        supportState: 'REMINDER_TOO_SOON',
+        pendingReminder: {
+          ...pr,
+          parsedApptTime: freshParsed?.toISOString() ?? pr.parsedApptTime,
+          suggestedMins,
+        },
+      });
+
+      await sendTooSoonPrompt(phone, lang, minsUntilAppt, suggestedMins);
+      return;
+    }
+  }
+}
+
+/**
+ * Sends the "appointment is in less than X" alternative offer.
+ */
+async function sendTooSoonPrompt(
+  phone: string,
+  lang: Language,
+  minsUntilAppt: number,
+  suggestedMins: number,
+): Promise<void> {
+  const actualTimeStr    = formatMinutes(minsUntilAppt);
+  const suggestedTimeStr = formatMinutes(suggestedMins);
+  const btnLabel         = `⏰ ${suggestedMins < 60 ? `${suggestedMins}m` : `${Math.floor(suggestedMins / 60)}h`} before`.slice(0, 20);
+
+  await messageQueue.add({
+    to:      phone,
+    message: t('booking_reminder_too_soon', lang, {
+      actualTime:    actualTimeStr,
+      suggestedTime: suggestedTimeStr,
+    }),
+    buttons: [
+      { id: 'REMIND_ACCEPT_SUGGEST', title: btnLabel         },
+      { id: 'REMIND_CUSTOM',         title: '✏️ Custom time' },
+      { id: 'REMIND_DECLINE',        title: '❌ Skip'         },
+    ] as InteractiveButton[],
+  });
+}
+
+/**
+ * Handles a mid-conversation reminder request (outside the REMINDER_PENDING state).
+ * The customer may say "remind me 30 mins before" at any point.
+ */
+async function processMidFlowReminderRequest(
+  phone: string,
+  vendor: Vendor,
+  booking: { id: string; serviceRequested: string; scheduledDate: string | null; customerPhone: string },
+  durationMins: number,
+  lang: Language,
+  customerId?: string,
+): Promise<void> {
+  const result = await scheduleReminder({
+    bookingId:     booking.id,
+    customerId,
+    customerPhone: phone,
+    serviceName:   booking.serviceRequested,
+    businessName:  vendor.businessName,
+    scheduledDate: booking.scheduledDate ?? '',
+    durationMins,
+    language:      lang,
+  });
+
+  if (result.ok) {
+    await messageQueue.add({
+      to:      phone,
+      message: t('booking_reminder_set', lang, {
+        reminderTime: result.formattedReminderTime,
+        serviceName:  booking.serviceRequested,
+      }),
+    });
+    return;
+  }
+
+  switch (result.reason) {
+    case 'parse_failed':
+      await messageQueue.add({ to: phone, message: t('booking_reminder_parse_fail', lang) });
+      break;
+    case 'appointment_passed':
+      await messageQueue.add({ to: phone, message: t('booking_reminder_past', lang) });
+      break;
+    case 'too_soon': {
+      const { minsUntilAppt, suggestedMins } = result;
+      // Store context then show the too-soon prompt
+      const session = await sessionRepository.findActive(phone, vendor.id);
+      const data    = ((session?.sessionData ?? { cart: [], supportState: '', role: 'customer' }) as unknown) as SupportSessionData;
+      await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, {
+        ...data as unknown as SessionData,
+        supportState: 'REMINDER_TOO_SOON',
+        pendingReminder: {
+          bookingId:        booking.id,
+          serviceRequested: booking.serviceRequested,
+          scheduledDate:    booking.scheduledDate ?? '',
+          vendorName:       vendor.businessName,
+          language:         lang,
+          suggestedMins,
+        },
+      });
+      await sendTooSoonPrompt(phone, lang, minsUntilAppt, suggestedMins);
+      break;
+    }
+  }
 }
 
 // ─── FAQ / Question Handling ──────────────────────────────────────────────────
@@ -438,32 +808,27 @@ async function handleQuestion(
   question: string,
   vendor: Vendor,
 ): Promise<void> {
-  // 1. Look up FAQ database first
-  const faqs = await prisma.supportKnowledge.findMany({
-    where: { vendorId: vendor.id },
-  });
+  const faqs = await prisma.supportKnowledge.findMany({ where: { vendorId: vendor.id } });
 
   let answer: string | null = null;
-
   if (faqs.length > 0) {
     answer = await answerFromFaqs(question, faqs.map((f) => ({ q: f.question, a: f.answer })), vendor);
   }
 
   if (answer) {
     await messageQueue.add({
-      to: phone,
+      to:      phone,
       message: `${answer}\n\n_Reply *MENU* to go back or ask another question._`,
     });
     await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, { cart: [], supportState: '', role: 'customer' });
     return;
   }
 
-  // 2. LLM fallback using vendor businessContext
   if (vendor.businessContext) {
     const llmAnswer = await answerFromContext(question, vendor);
     if (llmAnswer) {
       await messageQueue.add({
-        to: phone,
+        to:      phone,
         message: `${llmAnswer}\n\n_Reply *MENU* to go back or ask another question._`,
       });
       await sessionRepository.upsert(phone, vendor.id, ConversationState.BROWSING, { cart: [], supportState: '', role: 'customer' });
@@ -471,7 +836,7 @@ async function handleQuestion(
     }
   }
 
-  // 3. Escalate to vendor
+  // Escalate to vendor
   await messageQueue.add({
     to: phone,
     message:
@@ -480,14 +845,10 @@ async function handleQuestion(
       `_In the meantime, reply *MENU* to see our services._`,
   });
 
-  // Notify vendor
-  const notifNumbers = await prisma.vendorNotificationNumber.findMany({
-    where: { vendorId: vendor.id, isActive: true },
-  });
-
+  const notifNumbers = await prisma.vendorNotificationNumber.findMany({ where: { vendorId: vendor.id, isActive: true } });
   for (const num of notifNumbers) {
     await messageQueue.add({
-      to: num.phone,
+      to:      num.phone,
       message:
         `💬 *Customer Question*\n\n` +
         `From: ${phone}\n` +
@@ -505,13 +866,12 @@ async function answerFromFaqs(
   vendor: Vendor,
 ): Promise<string | null> {
   const faqText = faqs.map((f, i) => `${i + 1}. Q: ${f.q}\n   A: ${f.a}`).join('\n\n');
-
   try {
     const result = await anthropic.messages.create({
-      model: env.ANTHROPIC_MODEL,
+      model:      env.ANTHROPIC_MODEL,
       max_tokens: 512,
-      messages: [{
-        role: 'user',
+      messages:   [{
+        role:    'user',
         content:
           `You are a customer support bot for "${vendor.businessName}".\n\n` +
           `Customer question: "${question}"\n\n` +
@@ -520,7 +880,6 @@ async function answerFromFaqs(
           `If none of the FAQs answer the question, reply with exactly: ESCALATE`,
       }],
     });
-
     const text = result.content[0].type === 'text' ? result.content[0].text.trim() : '';
     if (text === 'ESCALATE' || !text) return null;
     return text;
@@ -536,10 +895,10 @@ async function answerFromContext(
 ): Promise<string | null> {
   try {
     const result = await anthropic.messages.create({
-      model: env.ANTHROPIC_MODEL,
+      model:      env.ANTHROPIC_MODEL,
       max_tokens: 512,
-      messages: [{
-        role: 'user',
+      messages:   [{
+        role:    'user',
         content:
           `You are a customer support bot for "${vendor.businessName}".\n\n` +
           `Business context: ${vendor.businessContext}\n\n` +
@@ -548,7 +907,6 @@ async function answerFromContext(
           `If you are not confident, reply with exactly: ESCALATE`,
       }],
     });
-
     const text = result.content[0].type === 'text' ? result.content[0].text.trim() : '';
     if (text === 'ESCALATE' || !text) return null;
     return text;
@@ -562,14 +920,14 @@ async function answerFromContext(
 
 async function showCustomerBookings(phone: string, vendor: Vendor): Promise<void> {
   const bookings = await prisma.booking.findMany({
-    where: { vendorId: vendor.id, customerPhone: phone },
+    where:   { vendorId: vendor.id, customerPhone: phone },
     orderBy: { createdAt: 'desc' },
-    take: 5,
+    take:    5,
   });
 
   if (bookings.length === 0) {
     await messageQueue.add({
-      to: phone,
+      to:      phone,
       message:
         `You don't have any bookings with *${vendor.businessName}* yet.\n\n` +
         `Reply *BOOK SERVICE* to make one! 😊`,
@@ -585,7 +943,7 @@ async function showCustomerBookings(phone: string, vendor: Vendor): Promise<void
   });
 
   await messageQueue.add({
-    to: phone,
+    to:      phone,
     message:
       `📅 *Your Bookings with ${vendor.businessName}*\n\n` +
       `${lines.join('\n\n')}\n\n` +
@@ -595,11 +953,16 @@ async function showCustomerBookings(phone: string, vendor: Vendor): Promise<void
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+async function clearToIdle(phone: string, vendorId: string): Promise<void> {
+  await sessionRepository.upsert(phone, vendorId, ConversationState.BROWSING, {
+    cart: [], supportState: '', role: 'customer',
+  });
+}
+
 async function vendorNeedsPickupAddress(vendorId: string): Promise<boolean> {
-  // Check if vendor's setup session has serviceLocationType = pickup or both
   const session = await prisma.vendorSetupSession.findUnique({ where: { vendorId } });
   if (!session) return false;
   const data = session.collectedData as Record<string, unknown>;
-  const loc = data.serviceLocationType as string | undefined;
+  const loc  = data.serviceLocationType as string | undefined;
   return loc === 'pickup' || loc === 'both';
 }

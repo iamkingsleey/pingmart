@@ -132,8 +132,8 @@ async function buildIntentContext(phone: string): Promise<IntentContext> {
       };
     }
 
-    // Unknown sender — may be at language selection or shop/sell screen
-    if (routerState === 'LANG_INIT' || routerState === 'SHOP_OR_SELL') {
+    // Unknown sender — may be at any language selection step or shop/sell screen
+    if (routerState === 'LANG_INIT' || routerState === 'LANG_INIT_ALT' || routerState === 'SHOP_OR_SELL') {
       const customer = await customerRepository.findByWhatsAppNumber(phone);
       return {
         role:     'onboarding',
@@ -283,6 +283,10 @@ export async function routeIncomingMessage(
   const routerState = await redis.get(`router:state:${senderPhone}`);
   if (routerState === 'LANG_INIT') {
     await handleLangInitReply(senderPhone, effectiveMessage, messageId);
+    return;
+  }
+  if (routerState === 'LANG_INIT_ALT') {
+    await handleLangAltListReply(senderPhone, effectiveMessage, messageId);
     return;
   }
   if (routerState === 'SHOP_OR_SELL') {
@@ -660,24 +664,42 @@ async function startCustomerSession(phone: string, vendor: Vendor): Promise<void
 }
 
 /**
- * Shows the language-selection prompt to a brand-new sender.
- * This is always the FIRST thing a new phone sees before "shop or sell?".
- * Sent as a List Message so the customer can tap instead of typing a number.
+ * Step 1 of the new two-step language selection flow.
+ *
+ * Sends a two-button message that asks whether the user wants to continue
+ * in English (one tap) or pick from the full alternative-language list.
+ * English is asked first because the welcome text is already in English,
+ * so most users only need a single tap.
  */
 async function showLanguageSelectionScreen(phone: string): Promise<void> {
   await redis.setex(`router:state:${phone}`, ROUTER_STATE_TTL_SECS, 'LANG_INIT');
   await messageQueue.add({
     to: phone,
-    message: `👋 Welcome to *Pingmart*!\n\nPlease choose your language to continue:`,
+    message: `👋 Welcome to *Pingmart*!\n\nDo you want to continue in English?`,
+    buttons: [
+      { id: 'LANG_CONFIRM_EN', title: '✅ Yes, English'   },
+      { id: 'LANG_SWITCH',     title: '🌍 Other language' },
+    ],
+  });
+}
+
+/**
+ * Step 2 (alternate path): shows the 4-option language list when the user
+ * tapped "Other language" in step 1. English is excluded — they just declined it.
+ */
+async function showAltLanguageList(phone: string): Promise<void> {
+  await redis.setex(`router:state:${phone}`, ROUTER_STATE_TTL_SECS, 'LANG_INIT_ALT');
+  await messageQueue.add({
+    to: phone,
+    message: `🌍 Which language do you prefer?`,
     listSections: [
       {
-        title: '🌍 Select Your Language',
+        title: 'Choose your language',
         rows: [
-          { id: 'en',  title: '🇬🇧 English'  },
-          { id: 'pid', title: '🇳🇬 Pidgin'   },
-          { id: 'ig',  title: 'Igbo'          },
-          { id: 'yo',  title: 'Yorùbá'        },
-          { id: 'ha',  title: 'Hausa'         },
+          { id: 'pid', title: '🇳🇬 Pidgin' },
+          { id: 'ig',  title: 'Igbo'        },
+          { id: 'yo',  title: 'Yorùbá'      },
+          { id: 'ha',  title: 'Hausa'       },
         ],
       },
     ],
@@ -686,37 +708,79 @@ async function showLanguageSelectionScreen(phone: string): Promise<void> {
 }
 
 /**
- * Handles the reply to the language-selection prompt.
- * Accepts both list row IDs (en, pid, ig, yo, ha) and legacy numeric keys (1-5).
+ * Handles the reply to step 1 of the language selection flow (LANG_INIT state).
  *
- * Performance-critical path — this is the first response after the user engages.
- * Order of operations:
- *   1. Typing indicator (fire-and-forget, <10ms)
- *   2. Clear router state + send intent screen in parallel (non-blocking DB)
- *   3. Persist language to Customer record async (does NOT block the reply)
+ * Accepts:
+ *   LANG_CONFIRM_EN — user wants English → proceed directly
+ *   LANG_SWITCH     — user wants a different language → show 4-option list
+ *   1               — legacy numeric fallback for English
+ *   2–5             — legacy numeric fallback for Pidgin/Igbo/Yorùbá/Hausa
  */
 async function handleLangInitReply(phone: string, message: string, messageId: string): Promise<void> {
-  const LANG_MAP: Record<string, Language> = {
-    // List row IDs (primary — sent by the interactive list)
-    'en': 'en', 'pid': 'pid', 'ig': 'ig', 'yo': 'yo', 'ha': 'ha',
-    // Legacy numeric fallback (plain text replies still work)
-    '1': 'en',  '2': 'pid',  '3': 'ig',  '4': 'yo',  '5': 'ha',
-  };
-  const choice = message.trim().toLowerCase();
-  const lang = LANG_MAP[choice];
+  const upper = message.trim().toUpperCase();
 
-  if (!lang) {
-    // Unrecognised reply — show language screen again
-    await showLanguageSelectionScreen(phone);
+  // ── English confirmation ───────────────────────────────────────────────────
+  if (upper === 'LANG_CONFIRM_EN' || upper === 'EN' || upper === '1') {
+    await _proceedWithLanguage(phone, 'en', messageId);
     return;
   }
 
+  // ── "Other language" button → show 4-option alt list ─────────────────────
+  if (upper === 'LANG_SWITCH') {
+    await showAltLanguageList(phone);
+    return;
+  }
+
+  // ── Legacy direct-language selection (numeric or code) ────────────────────
+  const LANG_MAP: Record<string, Language> = {
+    'PID': 'pid', 'IG': 'ig', 'YO': 'yo', 'HA': 'ha',
+    '2': 'pid',   '3': 'ig',  '4': 'yo',  '5': 'ha',
+  };
+  const lang = LANG_MAP[upper];
+  if (lang) {
+    await _proceedWithLanguage(phone, lang, messageId);
+    return;
+  }
+
+  // Unrecognised reply — show step-1 screen again
+  await showLanguageSelectionScreen(phone);
+}
+
+/**
+ * Handles the reply to step 2 of the language selection flow (LANG_INIT_ALT state).
+ *
+ * Accepts list row IDs (pid, ig, yo, ha) or legacy numeric fallback (2–5).
+ */
+async function handleLangAltListReply(phone: string, message: string, messageId: string): Promise<void> {
+  const LANG_MAP: Record<string, Language> = {
+    'pid': 'pid', 'ig': 'ig', 'yo': 'yo', 'ha': 'ha',
+    'PID': 'pid', 'IG': 'ig', 'YO': 'yo', 'HA': 'ha',
+    '2': 'pid',   '3': 'ig',  '4': 'yo',  '5': 'ha',
+  };
+  const lang = LANG_MAP[message.trim()];
+
+  if (!lang) {
+    // Unrecognised — show alt list again
+    await showAltLanguageList(phone);
+    return;
+  }
+
+  await _proceedWithLanguage(phone, lang, messageId);
+}
+
+/**
+ * Shared helper: clears router state, shows the shop/sell screen, and persists
+ * the chosen language to the Customer record (async, non-blocking).
+ *
+ * Performance-critical path — this is the first response after the user engages.
+ */
+async function _proceedWithLanguage(phone: string, lang: Language, messageId: string): Promise<void> {
   const t0 = Date.now();
 
-  // Step 1: typing indicator — immediate, fire-and-forget
+  // Typing indicator — immediate, fire-and-forget
   sendTypingIndicator(messageId).catch(() => {});
 
-  // Step 2: clear LANG_INIT state and send the intent screen — do NOT await DB first
+  // Clear state + send intent screen in parallel — do NOT await DB first
   await Promise.all([
     redis.del(`router:state:${phone}`),
     showShopOrSellScreen(phone, lang),
@@ -728,12 +792,12 @@ async function handleLangInitReply(phone: string, message: string, messageId: st
     ms: Date.now() - t0,
   });
 
-  // Step 3: persist language to Customer record async — never blocks the reply
+  // Persist language to Customer record async — never blocks the reply
   Promise.all([
     customerRepository.findOrCreate(phone),
     customerRepository.updateLanguage(phone, lang),
   ]).catch((err) =>
-    logger.error('handleLangInitReply: language persist failed', { from: maskPhone(phone), err }),
+    logger.error('_proceedWithLanguage: language persist failed', { from: maskPhone(phone), err }),
   );
 }
 

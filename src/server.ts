@@ -25,6 +25,7 @@ import './queues/workers/reorder.worker';
 import './queues/workers/openingNotification.worker';
 import './queues/workers/sessionTimeout.worker';
 import './queues/workers/learningSummary.worker';
+import './queues/workers/bookingReminder.worker';
 
 import { messageQueue } from './queues/message.queue';
 import { paymentQueue } from './queues/payment.queue';

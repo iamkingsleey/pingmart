@@ -263,24 +263,17 @@ async function handleOrders(
 }
 
 // ─── Language selection (inline — avoids circular import from router.service.ts) ─
+// Two-step flow: step 1 asks English or other; step 2 shows 4-option list.
+// Must stay in sync with showLanguageSelectionScreen() in router.service.ts.
 
 async function showLanguageSelection(phone: string): Promise<void> {
   await redis.setex(`router:state:${phone}`, ROUTER_STATE_TTL_SECS, 'LANG_INIT');
   await messageQueue.add({
     to: phone,
-    message: `👋 Welcome to *Pingmart*!\n\nPlease choose your language to continue:`,
-    listSections: [
-      {
-        title: '🌍 Select Your Language',
-        rows: [
-          { id: 'en',  title: '🇬🇧 English' },
-          { id: 'pid', title: '🇳🇬 Pidgin'  },
-          { id: 'ig',  title: 'Igbo'         },
-          { id: 'yo',  title: 'Yorùbá'       },
-          { id: 'ha',  title: 'Hausa'        },
-        ],
-      },
+    message: `👋 Welcome to *Pingmart*!\n\nDo you want to continue in English?`,
+    buttons: [
+      { id: 'LANG_CONFIRM_EN', title: '✅ Yes, English'   },
+      { id: 'LANG_SWITCH',     title: '🌍 Other language' },
     ],
-    listButtonText: 'Choose Language',
   });
 }

@@ -248,6 +248,26 @@ export const translations: Record<Language, Record<string, string>> = {
       '• *RESUME* or *OPEN SHOP* — Reactivate store\n' +
       '• *EDITED* — Signal sheet was updated\n' +
       '• *HANDLED* — Resolve a customer issue',
+
+    // ── Booking Reminders (Support Mode) ─────────────────────────────────
+    booking_reminder_prompt:
+      'Would you like me to remind you before your appointment?',
+    booking_reminder_set:
+      'Done! I\'ll remind you at *{reminderTime}* for your *{serviceName}* appointment. 👍',
+    booking_reminder_declined:
+      'No problem! Reply *MY BOOKINGS* anytime to check your status.',
+    booking_reminder_custom_ask:
+      'How long before your appointment should I remind you? (e.g. 45 minutes, 2 hours)',
+    booking_reminder_too_soon:
+      'Your appointment is in less than *{actualTime}* — want me to remind you in *{suggestedTime}* instead?',
+    booking_reminder_fire:
+      '⏰ *Reminder!* Your *{serviceName}* appointment with *{businessName}* is coming up at *{appointmentTime}*. See you soon!',
+    booking_reminder_parse_fail:
+      'I couldn\'t quite figure out when your appointment is. ' +
+      'Can you tell me the exact date and time? (e.g. Friday 15 Nov at 2pm)',
+    booking_reminder_past:
+      'It looks like that appointment has already passed. ' +
+      'Reply *MY BOOKINGS* to book again. 😊',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -449,6 +469,26 @@ export const translations: Record<Language, Record<string, string>> = {
       '• *RESUME* or *OPEN SHOP* — Reopen your store\n' +
       '• *EDITED* — Tell bot you\'ve updated your sheet\n' +
       '• *HANDLED* — Mark customer issue as resolved',
+
+    // ── Booking Reminders (Support Mode) ─────────────────────────────────
+    booking_reminder_prompt:
+      'You wan make I remind you before your appointment time?',
+    booking_reminder_set:
+      'E don set! I go ping you by *{reminderTime}* for your *{serviceName}* appointment. 👍',
+    booking_reminder_declined:
+      'No wahala! Type *MY BOOKINGS* anytime to check your status.',
+    booking_reminder_custom_ask:
+      'How long before your appointment you want make I ping you? (e.g. 45 minutes, 2 hours)',
+    booking_reminder_too_soon:
+      'Your appointment dey come in less than *{actualTime}* — you want make I remind you in *{suggestedTime}* instead?',
+    booking_reminder_fire:
+      '⏰ *Reminder!* Your *{serviceName}* appointment with *{businessName}* dey come up by *{appointmentTime}*. E don close! See you soon!',
+    booking_reminder_parse_fail:
+      'I no fit read when exactly your appointment be. ' +
+      'Please tell me the exact date and time (e.g. Friday 15 Nov 2pm)',
+    booking_reminder_past:
+      'E look like that appointment don pass already. ' +
+      'Type *MY BOOKINGS* to book again. 😊',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -654,6 +694,26 @@ export const translations: Record<Language, Record<string, string>> = {
       '• *RESUME* ma ọ bụ *OPEN SHOP* — Malitegharị ụlọ ahịa gị\n' +
       '• *EDITED* — Mee ka bot ghọta gbanwee sheet gị\n' +
       '• *HANDLED* — Gosi na i dozie nsogbu onye ọrịa',
+
+    // ── Booking Reminders (Support Mode) ─────────────────────────────────
+    booking_reminder_prompt:
+      'Ị chọrọ ka m chetara gị tupu oge ntinye aha gị?',
+    booking_reminder_set:
+      'Emere ya! A ga m echetara gị n\'oge *{reminderTime}* maka ntinye aha *{serviceName}* gị. 👍',
+    booking_reminder_declined:
+      'Ọ dịghị nsogbu! Dee *MY BOOKINGS* oge ọ bụla iji lelee ọnọdụ gị.',
+    booking_reminder_custom_ask:
+      'Ogologo oge ole tupu ntinye aha gị ka ị chọrọ ka m chetara gị? (dịka nke a, oge 45, awa 2)',
+    booking_reminder_too_soon:
+      'Ntinye aha gị dị na oge ole na ole nke dị ala karịa *{actualTime}* — ị chọrọ ka m chetara gị na *{suggestedTime}* kama?',
+    booking_reminder_fire:
+      '⏰ *Ihe ọchọcha!* Ntinye aha *{serviceName}* gị na *{businessName}* na-abịa na *{appointmentTime}*. Anyị na-atọ ụlọ ọrụ gị!',
+    booking_reminder_parse_fail:
+      'Enweghị m ike ịgụta oge ntinye aha gị kpọmkwem. ' +
+      'Biko gwara m ụbọchị na oge gangan (dịka Friday 15 Nov 2pm)',
+    booking_reminder_past:
+      'Ọ dị ka ntinye aha ahụ adịla. ' +
+      'Dee *MY BOOKINGS* ịwu ọzọ. 😊',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -860,6 +920,26 @@ export const translations: Record<Language, Record<string, string>> = {
       '• *RESUME* tàbí *OPEN SHOP* — Tún ṣí ilé ìtajà rẹ\n' +
       '• *EDITED* — Sọ fún bot pé o ti ṣàtúnṣe sheet rẹ\n' +
       '• *HANDLED* — Samisi pé ọ̀rọ̀ alabara ti parí',
+
+    // ── Booking Reminders (Support Mode) ─────────────────────────────────
+    booking_reminder_prompt:
+      'Ṣé o fẹ́ kí n leti ọ ṣáájú àkókò ìpinnu lati padé rẹ?',
+    booking_reminder_set:
+      'O ti ṣètò! Emi yóò leti ọ ní *{reminderTime}* fún ìpinnu lati padé *{serviceName}* rẹ. 👍',
+    booking_reminder_declined:
+      'Kò sí wahala! Tẹ *MY BOOKINGS* ní àkókò kankan láti ṣáyẹ̀wò ipò rẹ.',
+    booking_reminder_custom_ask:
+      'Ìgbà mélòó ṣáájú ìpinnu lati padé tí o fẹ́ kí n leti ọ? (fún àpẹẹrẹ, ìjẹ́jú 45, wákàtí 2)',
+    booking_reminder_too_soon:
+      'Ìpinnu lati padé rẹ wà ní kéréẹ́ ju *{actualTime}* lọ — ṣé o fẹ́ kí n leti ọ ní *{suggestedTime}* dípò?',
+    booking_reminder_fire:
+      '⏰ *Ìránilétí!* Ìpinnu lati padé *{serviceName}* rẹ pẹ̀lú *{businessName}* ń sún mọ́ ní *{appointmentTime}*. A ń retí rẹ!',
+    booking_reminder_parse_fail:
+      'Mi ò lè ka àkókò ìpinnu lati padé rẹ. ' +
+      'Jọ̀wọ́ sọ fún mi ọjọ́ àti àkókò gangan (fún àpẹẹrẹ Friday 15 Nov 2pm)',
+    booking_reminder_past:
+      'O dàbí pé ìpinnu lati padé yẹn ti kọjá. ' +
+      'Tẹ *MY BOOKINGS* láti ṣe ìpinnu ọ̀tun. 😊',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1065,5 +1145,25 @@ export const translations: Record<Language, Record<string, string>> = {
       '• *RESUME* ko *OPEN SHOP* — Sake buɗe shago\n' +
       '• *EDITED* — Sanar da bot cewa ka gyara sheet ɗinka\n' +
       '• *HANDLED* — Nuna cewa matsalar abokin ciniki ta ƙare',
+
+    // ── Booking Reminders (Support Mode) ─────────────────────────────────
+    booking_reminder_prompt:
+      'Kuna son in tunatar da ku kafin lokacin alƙawarinku?',
+    booking_reminder_set:
+      'An saita! Zan tunatar da ku a *{reminderTime}* don alƙawarin *{serviceName}* ku. 👍',
+    booking_reminder_declined:
+      'Babu matsala! Rubuta *MY BOOKINGS* don duba matsayinku.',
+    booking_reminder_custom_ask:
+      'Nawa lokaci kafin alƙawarinku kuke son a tunatar da ku? (misali mintuna 45, awowi 2)',
+    booking_reminder_too_soon:
+      'Alƙawarinku yana zuwa cikin ƙasa da *{actualTime}* — kuna son a tunatar da ku a *{suggestedTime}* maimakon?',
+    booking_reminder_fire:
+      '⏰ *Tunatarwa!* Alƙawarin *{serviceName}* ku tare da *{businessName}* yana zuwa a *{appointmentTime}*. Muna jiran ku!',
+    booking_reminder_parse_fail:
+      'Ba zan iya karanta lokacin alƙawarinku ba. ' +
+      'Don Allah faɗa mini daidai rana da lokaci (misali Friday 15 Nov 2pm)',
+    booking_reminder_past:
+      'Kamar alƙawarin ya wuce. ' +
+      'Rubuta *MY BOOKINGS* don sake yin alƙawari. 😊',
   },
 };

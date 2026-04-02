@@ -6,6 +6,13 @@
 
 ---
 
+## Related Documents
+
+- [COMMANDS.md](./COMMANDS.md) — Full reference of all bot commands and Pidgin aliases
+- [PIDGIN.md](./PIDGIN.md) — Nigerian Pidgin language skill reference for the bot LLM
+
+---
+
 ## Table of Contents
 
 1. [Core Platform](#core-platform)
@@ -15,10 +22,11 @@
 5. [Intelligence Layer](#intelligence-layer)
 6. [AI Learning Layer](#ai-learning-layer)
 7. [Support Mode](#support-mode)
-8. [Performance](#performance)
-9. [Infrastructure & Security](#infrastructure--security)
-10. [In Progress](#in-progress)
-11. [Planned / Roadmap](#planned--roadmap)
+8. [Bot Commands](#bot-commands)
+9. [Performance](#performance)
+10. [Infrastructure & Security](#infrastructure--security)
+11. [In Progress](#in-progress)
+12. [Planned / Roadmap](#planned--roadmap)
 
 ---
 
@@ -631,6 +639,46 @@ When a customer asks a question the bot cannot answer (no matching FAQ, LLM not 
 - All vendor notification numbers receive the customer's phone and exact question
 - Vendor responds directly to the customer's WhatsApp number outside the bot
 - No dead ends — customer always gets a response path
+
+---
+
+## Bot Commands
+
+**Status:** ✅ Built
+
+> Full reference: [COMMANDS.md](./COMMANDS.md)
+
+Users can send commands at any point in a conversation to trigger actions instantly, regardless of session state. Commands are checked before any other routing logic.
+
+### Global Commands
+| Command | Pidgin Alias | Action |
+|---------|-------------|--------|
+| `RESET` | — | Wipe session and restart from language selection |
+| `MENU` | `HOME` | Return to main intent screen or vendor dashboard |
+| `LANGUAGE` | — | Re-open language selection without full reset |
+| `HELP` | `ASSIST` | Show commands relevant to current role |
+| `CANCEL` | `COMOT` | Go back one step |
+| `SKIP` | — | Skip current optional step |
+
+### Customer Commands
+| Command | Pidgin Alias | Action |
+|---------|-------------|--------|
+| `CART` | `MY CART` | View current cart |
+| `CLEAR` | — | Empty cart and restart shopping |
+| `DONE` | `I DON FINISH` | Proceed to checkout |
+| `ORDERS` | — | View last 5 orders |
+
+### Vendor Commands
+| Command | Pidgin Alias | Action |
+|---------|-------------|--------|
+| `DASHBOARD` | — | Jump to vendor dashboard |
+| `ADD` | — | Add products to catalogue |
+| `CATALOGUE` | — | View current product list |
+| `HOURS` | — | Update business hours |
+| `PAUSE` | `CLOSE SHOP` | Temporarily pause store |
+| `RESUME` | `OPEN SHOP` | Reactivate paused store |
+| `EDITED` | — | Re-fetch updated Google Sheet |
+| `HANDLED` | — | Mark escalated support issue resolved |
 
 ---
 

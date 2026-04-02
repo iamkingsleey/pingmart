@@ -16,6 +16,7 @@ import { logger } from '../utils/logger';
 import {
   findLanguagePattern,
   saveLanguagePattern,
+  logPidginPhrase,
   CONFIDENCE_HIGH,
   CONFIDENCE_MEDIUM,
 } from './learning.service';
@@ -106,6 +107,12 @@ export async function interpretMessageWithConfidence(
     saveLanguagePattern(language, llmResult.intent, customerMessage);
   }
 
+  // ── Step 4: Log unrecognised Pidgin phrases to Learning Queue ────────────────
+  // Fires async — never blocks the response path.
+  if (language === 'pid' && llmResult.intent === 'UNKNOWN') {
+    logPidginPhrase(customerMessage, 'UNKNOWN', conversationContext);
+  }
+
   return { intent: llmResult, confidence, source: 'llm', language };
 }
 
@@ -172,7 +179,21 @@ Possible intents and their JSON format:
 - Show most popular item: {"intent": "SHOW_POPULAR"}
 - Anything else: {"intent": "UNKNOWN", "rawMessage": "original message here"}
 Rules:
-- Nigerian Pidgin English is common — understand it (e.g. "abeg", "wetin", "I wan", "make I")
+- Nigerian Pidgin English is very common — always understand it. Comprehensive Pidgin phrase map:
+  GREETING: "How far?", "How you dey?", "How bodi?", "Sup", "I dey", "I dey fine", "I dey kampe", "I don come back"
+  MENU: "Wetin you get?", "Show me wetin dey", "Una dey sell wetin?", "Wetin dey?", "I wan see wetin you get"
+  ORDER: "I wan take am", "I wan chop", "I dey H" (I'm hungry), "Give me", "Make I get am", "Add am"
+  PRICE_ENQUIRY: "How much e be?", "Wetin be the price?", "E dey?" (is it available?), "Una dey sell X?", "You get X?"
+  CONFIRM: "I don finish", "Sharp, confirm am", "E correct, do am"
+  CANCEL: "Comot am", "Cancel am", "Abeg no"
+  CART: "My cart", "Wetin I don add?"
+  MODIFY_CART: "Comot X from my cart" → MODIFY_CART remove; "Change X to 3" → MODIFY_CART update_quantity
+  TRACK_ORDER: "My order where?", "Order status wetin?", "E don reach?"
+  SPEAK_TO_VENDOR: "I wan yarn with vendor", "Connect me to person", "I wan talk to human"
+  HELP: "Abeg help me", "I no sabi wetin to do", "How this thing work?"
+  SHOW_CHEAPEST: "Wetin dey affordable?", "Cheapest thing wey you get"
+  SHOW_POPULAR: "Wetin people dey order most?", "Your best item"
+  REPEAT_ORDER: "Same as last time", "My usual", "Order again"
 - Quantities can be written as words: "two", "three" → convert to numbers
 - If a product name is approximate (e.g. "jollof" for "Jollof Rice"), match it to the closest available product
 - Availability questions like "Do you have X?", "Is X available?", "Do you sell X?", "Any X today?" → PRICE_ENQUIRY
@@ -453,10 +474,56 @@ function buildVendorContextBlock(ctx: VendorContext): string {
  *
  * Falls back to a safe static string if the API call fails.
  */
-// Maps a Language code to a clear instruction string for LLM system prompts
+// Maps a Language code to a clear instruction string for LLM system prompts.
+// The Pidgin entry is a full reference block sourced from /pingmart/PIDGIN.md.
+const PIDGIN_SYSTEM_INSTRUCTION = `Reply in Nigerian Pidgin English (Naija). Follow these rules exactly:
+
+GRAMMAR — always use Pidgin structure, never translate English word-for-word:
+- "Na Pingmart be this" (not "This is Pingmart")
+- "I dey here" (not "I am here")
+- "I don add am" (not "I have added it")
+- "I go send am" (not "I will send it")
+- "I no get am" (not "I don't have it")
+- "Wetin dey happen?" (not "What is happening?")
+- "Send am" (not "Send it")
+- "E good well well" (not "It's very good")
+- "All of dem" (not "All of them")
+
+TONE — warm Nigerian friend, not a robot:
+- Short, punchy sentences
+- Use: "E don do!", "Na so!", "Sharp!", "No wahala", "Abeg", "I dey here"
+- NEVER say "Please" → say "Abeg"
+- NEVER say "I will" → say "I go"
+- NEVER say "Yes" → say "Na so", "E correct", or "Ehen"
+- NEVER say "Thank you" → say "E don do, thank you!" or "Na you biko"
+- NEVER say "I don't understand" → say "I no fully grab wetin you mean"
+- NEVER say "Welcome to Pingmart" → say "Na Pingmart be this" or "You don reach Pingmart"
+
+COMMON EXPRESSIONS (use them naturally):
+- Surprise/pity: "Chai!" — when something goes wrong
+- Exactly right: "Gbam!" or "Na so!" — to confirm
+- Quickly: "Sharp sharp" — for fast actions
+- Step by step: "Small small" — for gradual progress
+- Very/properly: "Well well" — for emphasis (e.g. "E good well well")
+- Overwhelmingly good: "E choke" — for impressive catalogues
+- Plenty: "Opor" — large quantity
+- Well done: "You sabi" or "You know ball" — to compliment
+
+CONFIRMATIONS (use these exact formats):
+- Item added to cart: "✅ I don add {qty}x {product} to your cart!"
+- Order confirmed: "🎉 Order don land! {vendor} go see am now. Your order number na #{id}."
+- Payment received: "💚 E don do! I don confirm your payment of ₦{amount}. Your order dey move! 🚀"
+- Store is live: "🚀 {storeName} don dey live for Pingmart! Share your link make customers find you."
+- Something went wrong: "Chai! E get small wahala. Abeg try again or type HELP."
+- Store closed: "⏰ {storeName} don close for now. But drop your order — dem go see am when dem open."
+- Cart empty: "Your cart empty still. Send item number wey you wan buy."
+- Store paused: "Your shop don pause. Customers no go see am till you send OPEN SHOP."
+- Store resumed: "Your shop don come back live! Customers fit shop again."
+- Reset confirmed: "E don reset! Make we start from the beginning."`;
+
 const LANG_INSTRUCTION: Record<string, string> = {
   en:  'Reply in English.',
-  pid: 'Reply in Nigerian Pidgin English (e.g. "We no get that one", "Abeg try MENU").',
+  pid: PIDGIN_SYSTEM_INSTRUCTION,
   ig:  'Reply in Igbo.',
   yo:  'Reply in Yorùbá.',
   ha:  'Reply in Hausa.',

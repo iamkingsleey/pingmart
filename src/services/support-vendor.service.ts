@@ -14,6 +14,7 @@ import { env } from '../config/env';
 import { formatNaira } from '../utils/formatters';
 import { InteractiveListSection } from '../types';
 import { ServiceItemInput } from './support-onboarding.service';
+import { cancelBookingReminders } from './support-reminder.service';
 
 // ─── LLM Client ───────────────────────────────────────────────────────────────
 
@@ -268,6 +269,16 @@ async function updateBookingStatus(
     where: { id: booking.id },
     data: { status: newStatus as any },
   });
+
+  // Cancel any pending reminders when a booking is cancelled
+  if (newStatus === 'CANCELLED') {
+    cancelBookingReminders(booking.id).catch((err) =>
+      logger.warn('cancelBookingReminders failed (non-fatal)', {
+        bookingId: booking.id,
+        err: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
 
   const bookingId = formatBookingId(booking.id);
   const emoji = bookingStatusEmoji(newStatus);

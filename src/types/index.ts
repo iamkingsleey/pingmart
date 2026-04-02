@@ -213,7 +213,8 @@ export interface SessionData {
   /**
    * Current sub-state for support mode customer flow.
    * Examples: 'ASKING_QUESTION', 'BOOKING_SELECT', 'BOOKING_DATE',
-   *           'BOOKING_ADDRESS', 'BOOKING_CONFIRM', 'VIEWING_SERVICES', ''
+   *           'BOOKING_ADDRESS', 'BOOKING_CONFIRM', 'VIEWING_SERVICES',
+   *           'REMINDER_PENDING', 'REMINDER_CUSTOM_WAIT', 'REMINDER_TOO_SOON', ''
    */
   supportState?: string;
   /** Booking in progress during the booking flow */
@@ -222,6 +223,18 @@ export interface SessionData {
     serviceRequested: string;
     scheduledDate?: string;
     deliveryAddress?: string;
+  };
+  /** Reminder in progress — populated after booking confirmation */
+  pendingReminder?: {
+    bookingId:        string;
+    serviceRequested: string;
+    scheduledDate:    string;
+    vendorName:       string;
+    language:         string;
+    /** Cached parsed appointment time (ISO string) to avoid double LLM calls */
+    parsedApptTime?:  string;
+    /** Suggested lead-time minutes for the REMINDER_TOO_SOON state */
+    suggestedMins?:   number;
   };
 }
 

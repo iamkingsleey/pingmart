@@ -478,11 +478,39 @@ model Booking {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
-  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendor    Vendor            @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  reminders BookingReminder[]
 
   @@index([vendorId])
   @@index([vendorId, status])
   @@map("bookings")
+}
+
+// ─── BookingReminder ──────────────────────────────────────────────────────────
+// Scheduled reminder entries for Support Mode appointment bookings.
+// One booking can have at most one active (unsent) reminder at a time.
+// Bull job ID is stored for cancellation when bookings are cancelled.
+
+model BookingReminder {
+  id              String   @id @default(cuid())
+  bookingId       String
+  customerId      String?                       // Customer.id — optional, for future analytics
+  customerPhone   String
+  serviceName     String
+  businessName    String
+  reminderTime    DateTime                      // when the Bull job fires
+  appointmentTime DateTime                      // parsed appointment time — safety check in worker
+  bullJobId       String?                       // Bull job ID for cancellation
+  language        String   @default("en")       // customer language for the reminder message
+  sent            Boolean  @default(false)
+
+  createdAt       DateTime @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([sent, reminderTime])
+  @@map("booking_reminders")
 }
 
 // ─── InteractionLog ───────────────────────────────────────────────────────────
@@ -556,6 +584,25 @@ model UncertainInteraction {
   @@index([resolved, confidenceScore])
   @@index([createdAt])
   @@map("uncertain_interactions")
+}
+
+// ─── PidginLearningLog ────────────────────────────────────────────────────────
+// Phrases in Nigerian Pidgin that the bot could not confidently classify.
+// These are reviewed by humans and promoted to LanguagePattern or added to PIDGIN.md.
+// Privacy: no raw phone numbers stored here.
+
+model PidginLearningLog {
+  id              String   @id @default(cuid())
+  phrase          String                        // the raw Pidgin input
+  inferredMeaning String?                       // best-guess intent or "UNKNOWN"
+  context         String?                       // conversation state at time of message
+  sessionId       String?                       // links back to ConversationSession if available
+  status          String   @default("pending")  // pending | reviewed | added_to_pidgin_md
+  createdAt       DateTime @default(now())
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("pidgin_learning_log")
 }
 
 // ─── OrderIntelligence ────────────────────────────────────────────────────────
