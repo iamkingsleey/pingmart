@@ -74,6 +74,10 @@ model Vendor {
   // Populated once the vendor's catalogue is created in Meta Commerce Manager.
   whatsappCatalogueId String?
 
+  // ── Mono OWO (gated: OWO_PAYMENTS_ENABLED) ───────────────────────────
+  // Beneficiary ID returned by Mono after linking vendor payout account.
+  owoBeneficiaryId    String?
+
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -237,12 +241,14 @@ model Order {
   deliveredAt       DateTime?
   // Timestamp when a re-order nudge was sent — prevents duplicate nudges
   reorderSentAt     DateTime?
-  // Payment method chosen at checkout: paystack_transfer | bank_transfer
+  // Payment method chosen at checkout: paystack_transfer | bank_transfer | owo
   paymentMethod     String?
   // Dedicated virtual account assigned for Paystack Pay with Transfer
   virtualBankName      String?
   virtualAccountNumber String?
   virtualAccountExpiry DateTime?
+  // Mono OWO fund request ID (gated: OWO_PAYMENTS_ENABLED)
+  owoFundRequestId  String?
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
@@ -335,19 +341,20 @@ enum VendorMode {
 }
 
 enum OrderStatus {
-  PENDING_PAYMENT   // v1: Order created, awaiting payment
-  PAYMENT_PENDING   // v2: Virtual account / bank transfer created, waiting for payment
-  PAYMENT_CONFIRMED // v1: Paystack confirmed payment
-  PAID              // v2: Payment received and verified
-  CONFIRMED         // Vendor confirmed the order (physical only)
-  PREPARING         // Vendor is preparing the order (physical only)
-  READY             // v1: Order ready for pickup/delivery
-  OUT_FOR_DELIVERY  // v2: Order is on the way to the customer
-  DELIVERED         // Physical order delivered
-  DIGITAL_SENT      // Digital product delivered to customer
-  CANCELLED         // Order cancelled (by vendor or system)
-  EXPIRED           // v2: Payment window elapsed with no payment
-  REJECTED          // v2: Vendor rejected a manual bank transfer claim
+  PENDING_PAYMENT       // v1: Order created, awaiting payment
+  PAYMENT_PENDING       // v2: Virtual account / bank transfer created, waiting for payment
+  PAYMENT_CONFIRMED     // v1: Paystack confirmed payment
+  PAID                  // v2: Payment received and verified
+  CONFIRMED             // Vendor confirmed the order (physical only)
+  PREPARING             // Vendor is preparing the order (physical only)
+  READY                 // v1: Order ready for pickup/delivery
+  OUT_FOR_DELIVERY      // v2: Order is on the way to the customer
+  DELIVERED             // Physical order delivered
+  DIGITAL_SENT          // Digital product delivered to customer
+  CANCELLED             // Order cancelled (by vendor or system)
+  EXPIRED               // v2: Payment window elapsed with no payment
+  REJECTED              // v2: Vendor rejected a manual bank transfer claim
+  AWAITING_OWO_PAYMENT  // Mono OWO fund request sent; waiting for customer to approve in-app
 }
 
 enum ConversationState {

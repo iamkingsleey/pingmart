@@ -140,6 +140,26 @@ export const orderRepository = {
     });
   },
 
+  /** Finds an order by its Mono OWO fund request ID (for Mono webhook lookup). */
+  async findByOwoFundRequestId(fundRequestId: string): Promise<Order | null> {
+    return prisma.order.findFirst({
+      where: { owoFundRequestId: fundRequestId },
+      orderBy: { createdAt: 'desc' },
+    });
+  },
+
+  /**
+   * Atomically marks an OWO order as payment-processed.
+   * Returns true if this is the first time (idempotency guard).
+   */
+  async markOwoPaymentProcessed(orderId: string): Promise<boolean> {
+    const result = await prisma.order.updateMany({
+      where: { id: orderId, paymentProcessed: false },
+      data:  { paymentProcessed: true, status: 'PAYMENT_CONFIRMED' },
+    });
+    return result.count > 0;
+  },
+
   /** Marks digital delivery as complete */
   async markDigitalDelivered(orderId: string): Promise<Order> {
     return prisma.order.update({

@@ -9,6 +9,7 @@ import { verifyWhatsAppWebhookSignature } from '../middlewares/webhookSignature.
 import { webhookRateLimit } from '../middlewares/rateLimit.middleware';
 import { handleWhatsAppVerification, handleWhatsAppWebhook } from '../webhooks/whatsapp.webhook';
 import { handlePaystackWebhook } from '../webhooks/paystack.webhook';
+import { monoRouter } from './monoRoutes';
 
 const router = Router();
 
@@ -29,5 +30,8 @@ router.post(
   webhookRateLimit,
   handlePaystackWebhook,
 );
+
+// Mono OWO — POST /webhooks/mono for OWO payment events
+router.use('/mono', monoRouter);
 
 export { router as webhookRouter };

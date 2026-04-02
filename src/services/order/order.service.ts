@@ -84,6 +84,7 @@ import {
   CONFIDENCE_HIGH,
   CONFIDENCE_MEDIUM,
 } from '../learning.service';
+import { checkUserStatus, initiatePayment as initiateOwoPayment } from '../owoService';
 import { AsyncLocalStorage } from 'async_hooks';
 import { resolveStoreVocabulary, applyVocabulary } from '../../utils/store-vocabulary';
 import { StoreVocabulary } from '../../types';
@@ -1470,17 +1471,29 @@ async function createOrderAndInitiatePayment(
 
   // ── Determine payment method ───────────────────────────────────────────────
   // Digital orders always go through Paystack link (can't do bank transfer for instant delivery).
-  // Physical: prefer paystack_transfer if vendor has a Paystack key; otherwise bank_transfer.
+  // Physical: OWO first (if enabled and customer is active), then paystack_transfer, bank_transfer.
   let paymentMethod = sessionData.chosenPaymentMethod;
   if (!paymentMethod) {
     if (orderType === OrderType.DIGITAL) {
       paymentMethod = 'paystack_link';
-    } else if (vendor.paystackSecretKey && vendor.acceptedPayments !== 'bank') {
-      paymentMethod = 'paystack_transfer';
-    } else if (vendor.bankAccountNumber) {
-      paymentMethod = 'bank_transfer';
     } else {
-      paymentMethod = 'paystack_link'; // fallback
+      // Check OWO eligibility for physical orders (fire-and-forget on error — degrades to next option)
+      if (env.OWO_PAYMENTS_ENABLED) {
+        const owoStatus = await checkUserStatus(customerPhone).catch(() => 'NOT_FOUND' as const);
+        if (owoStatus === 'ACTIVE') {
+          paymentMethod = 'owo';
+        }
+      }
+
+      if (!paymentMethod) {
+        if (vendor.paystackSecretKey && vendor.acceptedPayments !== 'bank') {
+          paymentMethod = 'paystack_transfer';
+        } else if (vendor.bankAccountNumber) {
+          paymentMethod = 'bank_transfer';
+        } else {
+          paymentMethod = 'paystack_link'; // fallback
+        }
+      }
     }
   }
 
@@ -1514,6 +1527,11 @@ async function createOrderAndInitiatePayment(
   });
 
   // ── Route payment by method ────────────────────────────────────────────────
+
+  if (paymentMethod === 'owo') {
+    await handleOwoCheckout(order, customerPhone, totalAmount, language);
+    return;
+  }
 
   if (paymentMethod === 'bank_transfer') {
     await handleBankTransferCheckout(order, vendor, customerPhone, totalAmount, language);
@@ -1591,6 +1609,67 @@ async function handlePaystackTransferCheckout(
       vendorId: vendor.id,
     });
     await enqueue(customerPhone, msgPhysicalPaymentLink(paymentUrl, totalAmount, order.id, language));
+  }
+}
+
+// ─── Mono OWO Checkout ────────────────────────────────────────────────────────
+
+async function handleOwoCheckout(
+  order:         import('../../repositories/order.repository').Order,
+  customerPhone: string,
+  totalAmount:   number,
+  language:      Language,
+): Promise<void> {
+  try {
+    const amountNaira = Math.round(totalAmount / 100); // convert kobo → naira for OWO
+    const description = `Order ${formatOrderId(order.id)} — ${formatNaira(totalAmount)}`;
+
+    const fundRequest = await initiateOwoPayment(
+      customerPhone,
+      order.id,
+      amountNaira,
+      description,
+    );
+
+    // Persist the OWO fund request ID and set order status
+    await prisma.order.update({
+      where: { id: order.id },
+      data:  {
+        owoFundRequestId: fundRequest.id,
+        status:           'AWAITING_OWO_PAYMENT',
+      },
+    });
+
+    // Send customer the OWO prompt in their language
+    const owoMsg = t('owo_payment_prompt', language as Language);
+    await enqueue(customerPhone, owoMsg);
+
+    // Post-order quick actions (cancel option stays available)
+    const { message: postMsg, buttons: postBtns } = msgPostOrderButtons(language);
+    await enqueueButtons(customerPhone, postMsg, postBtns);
+
+    logger.info('OWO fund request sent to customer', {
+      orderId:       order.id,
+      fundRequestId: fundRequest.id,
+      customer:      maskPhone(customerPhone),
+    });
+  } catch (err) {
+    // OWO failed — fall back to Paystack link so the order flow never breaks
+    logger.error('OWO checkout failed — falling back to Paystack link', {
+      orderId: order.id,
+      error:   (err as Error).message,
+    });
+
+    const placeholderEmail = `${customerPhone.replace('+', '')}@orb.placeholder.com`;
+    const reference = order.paystackReference;
+    const paymentUrl = await initializeTransaction(placeholderEmail, totalAmount, reference, {
+      orderId:  order.id,
+      orderType: order.orderType as unknown as OrderType,
+      vendorId: order.vendorId,
+    });
+    await enqueue(customerPhone, msgPhysicalPaymentLink(paymentUrl, totalAmount, order.id, language));
+    const { message: postMsg, buttons: postBtns } = msgPostOrderButtons(language);
+    await enqueueButtons(customerPhone, postMsg, postBtns);
   }
 }
 

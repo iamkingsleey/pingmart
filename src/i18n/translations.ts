@@ -140,6 +140,10 @@ export const translations: Record<Language, Record<string, string>> = {
       "If you haven't paid yet, please use the payment link we sent.\n" +
       'Type *CANCEL* to start over.',
     cancel_awaiting_payment: 'Order cancelled. Type MENU to start a new order.',
+    owo_payment_prompt:
+      '💳 A payment request don land for your WhatsApp.\n\n' +
+      'Approve am to confirm your order sharp sharp. 🚀\n\n' +
+      'Type *CANCEL* to start over.',
 
     // ── Digital – catalog ─────────────────────────────────────────────────
     digital_welcome_header: 'Welcome to *{vendorName}*! 📚',
@@ -363,6 +367,10 @@ export const translations: Record<Language, Record<string, string>> = {
       'If you never pay, abeg use the payment link we send.\n' +
       'Type *CANCEL* to start over.',
     cancel_awaiting_payment: 'Order cancel. Type MENU to start new order.',
+    owo_payment_prompt:
+      '💳 Payment request don reach your WhatsApp.\n\n' +
+      'Approve am sharp sharp make we confirm your order. 🚀\n\n' +
+      'Type *CANCEL* to start over.',
 
     digital_welcome_header: 'Welcome to *{vendorName}*! 📚',
     digital_welcome_subtitle: 'See wetin we dey offer:',
@@ -588,6 +596,10 @@ export const translations: Record<Language, Record<string, string>> = {
       'Ọ bụrụ na ikwụbeghị ụgwọ, biko jiri nkọwa ụgwọ anyị zitere.\n' +
       'Tinye *CANCEL* ịmalite ọzọ.',
     cancel_awaiting_payment: 'Emechara iwu. Tinye MENU ịmalite iwu ọhụrụ.',
+    owo_payment_prompt:
+      '💳 Arịrịọ ụgwọ eruola na WhatsApp gị.\n\n' +
+      'Kwadoo ya ozugbo ka anyị nwee ike kwado iwu gị. 🚀\n\n' +
+      'Tinye *CANCEL* ịmalite ọzọ.',
 
     digital_welcome_header: 'Nnọọ na *{vendorName}*! 📚',
     digital_welcome_subtitle: 'Nke a bụ ihe anyị nwere:',
@@ -814,6 +826,10 @@ export const translations: Record<Language, Record<string, string>> = {
       'Tí o bá ti san owó, jọwọ lo àsopọ̀ sísanwó tí a fi ránṣẹ.\n' +
       'Tẹ *CANCEL* láti bẹ̀rẹ̀ lẹ́ẹ̀kan si.',
     cancel_awaiting_payment: 'Àṣẹ ti fagilé. Tẹ MENU láti bẹ̀rẹ̀ àṣẹ tuntun.',
+    owo_payment_prompt:
+      '💳 Ìbéèrè sísanwó ti dé WhatsApp rẹ.\n\n' +
+      'Fọwọsí rẹ lẹ́sẹ̀kẹsẹ̀ kí a lè jẹrisi àṣẹ rẹ. 🚀\n\n' +
+      'Tẹ *CANCEL* láti bẹ̀rẹ̀ lẹ́ẹ̀kan si.',
 
     digital_welcome_header: 'Ẹ káabọ sí *{vendorName}*! 📚',
     digital_welcome_subtitle: 'Ìwọ̀nyí ni ohun tí a ní fún ọ:',
@@ -1039,6 +1055,10 @@ export const translations: Record<Language, Record<string, string>> = {
       'Idan ba ka biya ba tukuna, don Allah yi amfani da haɗin biyan kuɗin da muka aika.\n' +
       'Tẹ *CANCEL* don fara daga farko.',
     cancel_awaiting_payment: 'An soke oda. Tẹ MENU don fara sabuwar oda.',
+    owo_payment_prompt:
+      '💳 Buƙatar biyan kuɗi ta isa WhatsApp ɗinka.\n\n' +
+      'Amince da shi yanzu don mu tabbatar da oda ɗinka. 🚀\n\n' +
+      'Tẹ *CANCEL* don fara daga farko.',
 
     digital_welcome_header: 'Barka da zuwa *{vendorName}*! 📚',
     digital_welcome_subtitle: 'Ga abin da muke bayarwa:',

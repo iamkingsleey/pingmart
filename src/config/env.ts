@@ -76,6 +76,15 @@ const envSchema = z.object({
   WHATSAPP_COMMERCE_ENABLED: z.string().default('false').transform((v) => v.toLowerCase() === 'true'),
   // From Meta Commerce Manager — required only when WHATSAPP_COMMERCE_ENABLED=true.
   WHATSAPP_CATALOG_ID: z.string().optional(),
+
+  // Mono OWO Payments — set to true only when ready to test with Mono credentials.
+  OWO_PAYMENTS_ENABLED: z.string().default('false').transform((v) => v.toLowerCase() === 'true'),
+  // Mono secret key — used in mono-sec-key header for all API calls.
+  MONO_SECRET_KEY: z.string().optional(),
+  // Mono public key — for client-side SDK usage (reserved).
+  MONO_PUBLIC_KEY: z.string().optional(),
+  // Mono webhook URL — the URL Mono should send events to (informational).
+  MONO_WEBHOOK_URL: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
