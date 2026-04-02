@@ -77,6 +77,10 @@ const envSchema = z.object({
   // From Meta Commerce Manager — required only when WHATSAPP_COMMERCE_ENABLED=true.
   WHATSAPP_CATALOG_ID: z.string().optional(),
 
+  // Admin/dev phone — used to gate developer-only test commands (e.g. TEST_OWO_PAY).
+  // Set to your WhatsApp number in 234XXXXXXXXXX format (no +).
+  ADMIN_PHONE_NUMBER: z.string().optional(),
+
   // Mono OWO Payments — set to true only when ready to test with Mono credentials.
   OWO_PAYMENTS_ENABLED: z.string().default('false').transform((v) => v.toLowerCase() === 'true'),
   // Mono secret key — used in mono-sec-key header for all API calls.

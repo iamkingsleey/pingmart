@@ -22,10 +22,18 @@ import { clearHistory } from '../utils/conversationHistory';
 import { t, Language } from '../i18n';
 import { formatOrderId, formatNaira } from '../utils/formatters';
 import { logger, maskPhone } from '../utils/logger';
+import { env } from '../config/env';
+import {
+  checkUserStatus,
+  initiatePayment as initiateOwoPayment,
+  getPaymentsByFundRequest,
+} from './owoService';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const ROUTER_STATE_TTL_SECS = 30 * 60; // 30 minutes — must match router.service.ts
+const ROUTER_STATE_TTL_SECS  = 30 * 60;      // 30 minutes — must match router.service.ts
+const OWO_TEST_RESULT_TTL    = 60 * 60;      // 60 minutes — test fund request ID lifetime
+const OWO_TEST_AMOUNT_NAIRA  = 100;          // ₦100 fixed test amount
 
 // ─── Token set ────────────────────────────────────────────────────────────────
 //
@@ -60,7 +68,16 @@ const INTERCEPT_TOKENS = new Set([
   'CLOSE SHOP',
   'RESUME',
   'OPEN SHOP',
+  // Dev/admin test commands (admin phone gated)
+  'TEST_OWO_PAY',  // initiate a ₦100 OWO fund request for self-testing
 ]);
+
+/** Returns true if the raw message is a TEST_OWO_STATUS {id} command. */
+function isOwoStatusCommand(upper: string): string | null {
+  const prefix = 'TEST_OWO_STATUS ';
+  if (upper.startsWith(prefix)) return upper.slice(prefix.length).trim();
+  return null;
+}
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -84,6 +101,14 @@ export async function interceptCommand(
   rawMessage: string,
 ): Promise<CommandResult> {
   const upper = rawMessage.trim().toUpperCase().replace(/\s+/g, ' ');
+
+  // ── Dev/admin test commands — checked before fast path ───────────────────
+  // TEST_OWO_STATUS has a dynamic argument so it can't live in INTERCEPT_TOKENS.
+  const owoStatusId = isOwoStatusCommand(upper);
+  if (upper === 'TEST_OWO_PAY' || owoStatusId !== null) {
+    await handleOwoTestCommand(phone, upper === 'TEST_OWO_PAY' ? null : owoStatusId);
+    return { handled: true };
+  }
 
   // Fast path — covers the vast majority of messages with zero I/O
   if (!INTERCEPT_TOKENS.has(upper)) return { handled: false };
@@ -262,6 +287,155 @@ async function handleOrders(
       lines: lines.join('\n'),
     }),
   });
+}
+
+// ─── OWO Dev Test Commands ────────────────────────────────────────────────────
+//
+// TEST_OWO_PAY        — check OWO status, then initiate a ₦100 fund request
+// TEST_OWO_STATUS {id} — poll a fund request for payment completion
+//
+// Gated: only works when sender's phone === ADMIN_PHONE_NUMBER env var.
+// All request/response bodies are logged verbosely for debugging.
+
+async function handleOwoTestCommand(phone: string, fundRequestId: string | null): Promise<void> {
+  const send = async (text: string) => {
+    await messageQueue.add({ to: phone, message: text });
+  };
+
+  // ── Admin gate ────────────────────────────────────────────────────────────
+  const adminPhone = env.ADMIN_PHONE_NUMBER;
+  if (!adminPhone) {
+    await send(`⚠️ ADMIN_PHONE_NUMBER is not set in environment. Cannot run test commands.`);
+    return;
+  }
+  // Normalise both sides: strip leading + for comparison
+  const normPhone = phone.replace(/^\+/, '');
+  if (normPhone !== adminPhone.replace(/^\+/, '')) {
+    logger.warn('OWO test command rejected — not admin', { from: maskPhone(phone) });
+    // Silently drop for non-admin senders (don't reveal command exists)
+    return;
+  }
+
+  // ── TEST_OWO_STATUS {id} ──────────────────────────────────────────────────
+  if (fundRequestId !== null) {
+    logger.info('[OWO TEST] getPaymentsByFundRequest', { fundRequestId });
+
+    if (!env.OWO_PAYMENTS_ENABLED) {
+      await send(`❌ OWO_PAYMENTS_ENABLED=false. Set it to true in Railway to use OWO.`);
+      return;
+    }
+
+    try {
+      const payments = await getPaymentsByFundRequest(fundRequestId);
+      logger.info('[OWO TEST] getPaymentsByFundRequest response', {
+        fundRequestId,
+        payments: JSON.stringify(payments),
+      });
+
+      if (!payments.length) {
+        await send(
+          `📋 *OWO Fund Request Status*\n\nID: \`${fundRequestId}\`\n\n` +
+          `No payments found yet. The customer has not approved the request.`,
+        );
+      } else {
+        const lines = payments.map((p, i) =>
+          `${i + 1}. ID: ${p.id}\n   Amount: ₦${((p.amount ?? 0) / 100).toFixed(2)}\n   Status: ${p.status}`,
+        );
+        await send(
+          `📋 *OWO Fund Request Payments*\n\nID: \`${fundRequestId}\`\n\n${lines.join('\n\n')}`,
+        );
+      }
+    } catch (err) {
+      const msg = (err as Error).message;
+      logger.error('[OWO TEST] getPaymentsByFundRequest error', { fundRequestId, error: msg });
+      await send(`❌ Error fetching payments:\n\n${msg}`);
+    }
+    return;
+  }
+
+  // ── TEST_OWO_PAY ──────────────────────────────────────────────────────────
+
+  // 1. Check if OWO is enabled
+  if (!env.OWO_PAYMENTS_ENABLED) {
+    await send(`❌ OWO payments are not enabled.\n\nSet *OWO_PAYMENTS_ENABLED=true* in Railway to activate.`);
+    return;
+  }
+
+  // 2. Check user status
+  logger.info('[OWO TEST] checkUserStatus', { phone: maskPhone(phone) });
+  let owoStatus: Awaited<ReturnType<typeof checkUserStatus>>;
+  try {
+    owoStatus = await checkUserStatus(phone);
+    logger.info('[OWO TEST] checkUserStatus response', { status: owoStatus, phone: maskPhone(phone) });
+  } catch (err) {
+    const msg = (err as Error).message;
+    logger.error('[OWO TEST] checkUserStatus error', { error: msg, phone: maskPhone(phone) });
+    await send(`❌ checkUserStatus error:\n\n${msg}`);
+    return;
+  }
+
+  // 3. Branch on status
+  if (owoStatus === 'NOT_FOUND') {
+    await send(
+      `📵 *OWO Status: NOT_FOUND*\n\n` +
+      `Your number is not registered on OWO.\n` +
+      `Download the *Xara app* to get started.`,
+    );
+    return;
+  }
+
+  if (owoStatus === 'PENDING_ACTIVATION') {
+    await send(
+      `⏳ *OWO Status: PENDING_ACTIVATION*\n\n` +
+      `Your OWO account is not fully activated yet.\n` +
+      `Complete setup on the *Xara app*.`,
+    );
+    return;
+  }
+
+  // status === 'ACTIVE'
+  await send(`✅ *OWO Status: ACTIVE*\n\nInitiating ₦${OWO_TEST_AMOUNT_NAIRA} test payment request…`);
+
+  // 4. Initiate fund request
+  const testReference = `TEST-${Date.now()}`;
+  logger.info('[OWO TEST] initiatePayment', {
+    phone:     maskPhone(phone),
+    reference: testReference,
+    amount:    OWO_TEST_AMOUNT_NAIRA,
+  });
+
+  try {
+    const fundRequest = await initiateOwoPayment(
+      phone,
+      testReference,
+      OWO_TEST_AMOUNT_NAIRA,
+      'Pingmart Test Payment',
+    );
+    logger.info('[OWO TEST] initiatePayment response', {
+      fundRequestId: fundRequest.id,
+      reference:     fundRequest.reference,
+      status:        fundRequest.status,
+      amount:        fundRequest.amount,
+    });
+
+    // 5. Cache fund request ID in Redis for 60 minutes
+    await redis.setex(`test_owo_${phone}`, OWO_TEST_RESULT_TTL, fundRequest.id);
+
+    await send(
+      `💳 *Test payment request sent!*\n\n` +
+      `Check your WhatsApp for the OWO approval prompt.\n\n` +
+      `*Fund Request ID:* \`${fundRequest.id}\`\n` +
+      `*Reference:* ${fundRequest.reference}\n` +
+      `*Amount:* ₦${OWO_TEST_AMOUNT_NAIRA}\n` +
+      `*Status:* ${fundRequest.status}\n\n` +
+      `To check payment status later, send:\n` +
+      `\`TEST_OWO_STATUS ${fundRequest.id}\``,
+    );
+  } catch (err) {
+    const msg = (err as Error).message;
+    logger.error('[OWO TEST] initiatePayment error', { error: msg, phone: maskPhone(phone) });
+    await send(`❌ initiatePayment error:\n\n${msg}`);
+  }
 }
 
 // ─── Language selection (inline — avoids circular import from router.service.ts) ─
