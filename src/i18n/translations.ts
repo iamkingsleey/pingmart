@@ -207,6 +207,47 @@ export const translations: Record<Language, Record<string, string>> = {
       'Want the same again? Reply *YES* to reorder instantly\n' +
       'or *MENU* to browse everything 😊',
     vendor_dashboard_welcome: '👋 Welcome back, *{businessName}*!\n\nWhat would you like to do?',
+    cmd_orders_none: 'You haven\'t placed any orders yet.\n\nType *MENU* to start browsing. 😊',
+    cmd_orders_list: '📦 *Your Last {count} Orders*\n\n{lines}\n\nType *MENU* to continue shopping.',
+    help_unknown:
+      '📋 *Pingmart Commands*\n\n' +
+      '🌐 *Always works:*\n' +
+      '• *MENU* or *HOME* — Get started\n' +
+      '• *LANGUAGE* — Change your language\n' +
+      '• *HELP* or *ASSIST* — This list\n' +
+      '• *CANCEL* or *COMOT* — Cancel current action\n' +
+      '• *RESET* — Wipe everything and start fresh',
+    help_customer:
+      '📋 *Pingmart Commands*\n\n' +
+      '🌐 *Always works:*\n' +
+      '• *MENU* or *HOME* — Main screen\n' +
+      '• *LANGUAGE* — Change your language\n' +
+      '• *HELP* or *ASSIST* — This list\n' +
+      '• *CANCEL* or *COMOT* — Cancel current step\n' +
+      '• *SKIP* — Skip optional step\n' +
+      '• *RESET* — Start completely fresh\n\n' +
+      '🛒 *Shopping:*\n' +
+      '• *CART* or *MY CART* — View your cart\n' +
+      '• *DONE* or *I DON FINISH* — Checkout\n' +
+      '• *CLEAR* — Empty your cart\n' +
+      '• *ORDERS* — Your last 5 orders',
+    help_vendor:
+      '📋 *Pingmart Commands*\n\n' +
+      '🌐 *Always works:*\n' +
+      '• *MENU* or *HOME* — Dashboard\n' +
+      '• *LANGUAGE* — Change your language\n' +
+      '• *HELP* or *ASSIST* — This list\n' +
+      '• *CANCEL* or *COMOT* — Cancel current step\n' +
+      '• *RESET* — Start completely fresh\n\n' +
+      '🏪 *Store Management:*\n' +
+      '• *DASHBOARD* — Jump to your dashboard\n' +
+      '• *ADD* — Add a product\n' +
+      '• *CATALOGUE* — View your products\n' +
+      '• *HOURS* — Update working hours\n' +
+      '• *PAUSE* or *CLOSE SHOP* — Pause your store\n' +
+      '• *RESUME* or *OPEN SHOP* — Reactivate store\n' +
+      '• *EDITED* — Signal sheet was updated\n' +
+      '• *HANDLED* — Resolve a customer issue',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -367,6 +408,47 @@ export const translations: Record<Language, Record<string, string>> = {
       'You wan do same thing again? Reply *YES* to reorder sharp sharp\n' +
       'or *MENU* to see everything 😊',
     vendor_dashboard_welcome: '👋 Welcome back, *{businessName}*!\n\nWetin you want do?',
+    cmd_orders_none: 'You never place any order yet.\n\nType *MENU* to start browse. 😊',
+    cmd_orders_list: '📦 *Your Last {count} Orders*\n\n{lines}\n\nType *MENU* to continue shop.',
+    help_unknown:
+      '📋 *Pingmart Commands*\n\n' +
+      '🌐 *E dey work anytime:*\n' +
+      '• *MENU* or *HOME* — Make we start\n' +
+      '• *LANGUAGE* — Change your language\n' +
+      '• *HELP* or *ASSIST* — See this list\n' +
+      '• *CANCEL* or *COMOT* — Cancel wetin you dey do\n' +
+      '• *RESET* — Wipe everything, start again',
+    help_customer:
+      '📋 *Pingmart Commands*\n\n' +
+      '🌐 *E dey work anytime:*\n' +
+      '• *MENU* or *HOME* — Main screen\n' +
+      '• *LANGUAGE* — Change your language\n' +
+      '• *HELP* or *ASSIST* — See this list\n' +
+      '• *CANCEL* or *COMOT* — Cancel current step\n' +
+      '• *SKIP* — Skip optional step\n' +
+      '• *RESET* — Start fresh from beginning\n\n' +
+      '🛒 *Shopping:*\n' +
+      '• *CART* or *MY CART* — See your cart\n' +
+      '• *DONE* or *I DON FINISH* — Checkout\n' +
+      '• *CLEAR* — Empty your cart\n' +
+      '• *ORDERS* — Your last 5 orders',
+    help_vendor:
+      '📋 *Pingmart Commands*\n\n' +
+      '🌐 *E dey work anytime:*\n' +
+      '• *MENU* or *HOME* — Dashboard\n' +
+      '• *LANGUAGE* — Change your language\n' +
+      '• *HELP* or *ASSIST* — See this list\n' +
+      '• *CANCEL* or *COMOT* — Cancel current step\n' +
+      '• *RESET* — Start fresh\n\n' +
+      '🏪 *Store:*\n' +
+      '• *DASHBOARD* — Jump to your dashboard\n' +
+      '• *ADD* — Add product\n' +
+      '• *CATALOGUE* — See your products\n' +
+      '• *HOURS* — Update your working hours\n' +
+      '• *PAUSE* or *CLOSE SHOP* — Pause your store\n' +
+      '• *RESUME* or *OPEN SHOP* — Reopen your store\n' +
+      '• *EDITED* — Tell bot you\'ve updated your sheet\n' +
+      '• *HANDLED* — Mark customer issue as resolved',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -531,6 +613,47 @@ export const translations: Record<Language, Record<string, string>> = {
       'Ị chọrọ iweghachi ya? Zaghachi *YES* ịwere ya ozugbo\n' +
       'ma ọ bụ *MENU* ịhụ ihe niile 😊',
     vendor_dashboard_welcome: '👋 Nabata ọzọ, *{businessName}*!\n\nGịnị chọrọ ime?',
+    cmd_orders_none: 'Ị adabeghị iwu ọ bụla ka ugbu a.\n\nTinye *MENU* ịmalite. 😊',
+    cmd_orders_list: '📦 *Iwu Gị {count} Ikpeazụ*\n\n{lines}\n\nTinye *MENU* ịgwa ahịa n\'ihu.',
+    help_unknown:
+      '📋 *Iwu Pingmart*\n\n' +
+      '🌐 *Ọ na-arụ ọrụ mgbe ọ bụla:*\n' +
+      '• *MENU* ma ọ bụ *HOME* — Bido\n' +
+      '• *LANGUAGE* — Gbanwee asụsụ gị\n' +
+      '• *HELP* ma ọ bụ *ASSIST* — Hụ ndepụta a\n' +
+      '• *CANCEL* ma ọ bụ *COMOT* — Kagbuo ihe ị na-eme ugbu a\n' +
+      '• *RESET* — Hichapụ ihe niile, malite ọzọ',
+    help_customer:
+      '📋 *Iwu Pingmart*\n\n' +
+      '🌐 *Ọ na-arụ ọrụ mgbe ọ bụla:*\n' +
+      '• *MENU* ma ọ bụ *HOME* — Ihuenyo isi\n' +
+      '• *LANGUAGE* — Gbanwee asụsụ gị\n' +
+      '• *HELP* ma ọ bụ *ASSIST* — Ndepụta iwu\n' +
+      '• *CANCEL* ma ọ bụ *COMOT* — Kagbuo nzọụkwụ ugbu a\n' +
+      '• *SKIP* — Wụfee nzọụkwụ ọ bụghị nke dị mkpa\n' +
+      '• *RESET* — Malite ọzọ n\'oge ọ bụla\n\n' +
+      '🛒 *Ịzụ ahịa:*\n' +
+      '• *CART* ma ọ bụ *MY CART* — Hụ cart gị\n' +
+      '• *DONE* ma ọ bụ *I DON FINISH* — Gaa checkout\n' +
+      '• *CLEAR* — Hichapụ cart gị\n' +
+      '• *ORDERS* — Iwu gị ikpeazụ 5',
+    help_vendor:
+      '📋 *Iwu Pingmart*\n\n' +
+      '🌐 *Ọ na-arụ ọrụ mgbe ọ bụla:*\n' +
+      '• *MENU* ma ọ bụ *HOME* — Dashboard\n' +
+      '• *LANGUAGE* — Gbanwee asụsụ gị\n' +
+      '• *HELP* ma ọ bụ *ASSIST* — Ndepụta iwu\n' +
+      '• *CANCEL* ma ọ bụ *COMOT* — Kagbuo nzọụkwụ ugbu a\n' +
+      '• *RESET* — Malite ọzọ n\'oge ọ bụla\n\n' +
+      '🏪 *Njikwa ụlọ ahịa:*\n' +
+      '• *DASHBOARD* — Laa dashboard gị\n' +
+      '• *ADD* — Tinye ngwaahịa ọhụrụ\n' +
+      '• *CATALOGUE* — Hụ ihe niile ị na-ere\n' +
+      '• *HOURS* — Melite oge ọrụ gị\n' +
+      '• *PAUSE* ma ọ bụ *CLOSE SHOP* — Kwụsị ụlọ ahịa gị\n' +
+      '• *RESUME* ma ọ bụ *OPEN SHOP* — Malitegharị ụlọ ahịa gị\n' +
+      '• *EDITED* — Mee ka bot ghọta gbanwee sheet gị\n' +
+      '• *HANDLED* — Gosi na i dozie nsogbu onye ọrịa',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -696,6 +819,47 @@ export const translations: Record<Language, Record<string, string>> = {
       'Ṣé o fẹ́ tún bẹ̀rẹ̀ bẹ́ẹ̀? Dáhùn *YES* láti tún bẹ̀sẹ̀ ní kíákíá\n' +
       'tàbí *MENU* láti rí gbogbo ohun 😊',
     vendor_dashboard_welcome: '👋 Káàbọ̀ padà, *{businessName}*!\n\nKíni o fẹ́ ṣe?',
+    cmd_orders_none: 'O kò tí ì ṣe àṣẹ kankan rí.\n\nTẹ *MENU* láti bẹ̀rẹ̀ yíká. 😊',
+    cmd_orders_list: '📦 *Àwọn Àṣẹ Rẹ {count} Tó Kọjá*\n\n{lines}\n\nTẹ *MENU* láti tẹ̀síwájú ràkòkò.',
+    help_unknown:
+      '📋 *Àwọn Àṣẹ Pingmart*\n\n' +
+      '🌐 *Ń ṣiṣẹ́ ní àkókò kankan:*\n' +
+      '• *MENU* tàbí *HOME* — Bẹ̀rẹ̀\n' +
+      '• *LANGUAGE* — Yí èdè rẹ padà\n' +
+      '• *HELP* tàbí *ASSIST* — Rí àtòjọ yìí\n' +
+      '• *CANCEL* tàbí *COMOT* — Fagilé ohun tí o ń ṣe\n' +
+      '• *RESET* — Pa gbogbo rẹ̀ nù, bẹ̀rẹ̀ ìgbà tuntun',
+    help_customer:
+      '📋 *Àwọn Àṣẹ Pingmart*\n\n' +
+      '🌐 *Ń ṣiṣẹ́ ní àkókò kankan:*\n' +
+      '• *MENU* tàbí *HOME* — Ojú ewé àkọ́kọ́\n' +
+      '• *LANGUAGE* — Yí èdè rẹ padà\n' +
+      '• *HELP* tàbí *ASSIST* — Àtòjọ àṣẹ\n' +
+      '• *CANCEL* tàbí *COMOT* — Fagilé ìgbésẹ̀ lọwọ\n' +
+      '• *SKIP* — Fò ìgbésẹ̀ àṣàyàn\n' +
+      '• *RESET* — Bẹ̀rẹ̀ ìgbà tuntun pátápátá\n\n' +
+      '🛒 *Ràkòkò:*\n' +
+      '• *CART* tàbí *MY CART* — Rí bò rẹ\n' +
+      '• *DONE* tàbí *I DON FINISH* — Sanwó\n' +
+      '• *CLEAR* — Ṣofintoto bò rẹ\n' +
+      '• *ORDERS* — Àwọn àṣẹ rẹ 5 tó kọjá',
+    help_vendor:
+      '📋 *Àwọn Àṣẹ Pingmart*\n\n' +
+      '🌐 *Ń ṣiṣẹ́ ní àkókò kankan:*\n' +
+      '• *MENU* tàbí *HOME* — Dashboard\n' +
+      '• *LANGUAGE* — Yí èdè rẹ padà\n' +
+      '• *HELP* tàbí *ASSIST* — Àtòjọ àṣẹ\n' +
+      '• *CANCEL* tàbí *COMOT* — Fagilé ìgbésẹ̀ lọwọ\n' +
+      '• *RESET* — Bẹ̀rẹ̀ ìgbà tuntun pátápátá\n\n' +
+      '🏪 *Ìṣàkóso Ilé Ìtajà:*\n' +
+      '• *DASHBOARD* — Lọ sí dashboard rẹ\n' +
+      '• *ADD* — Ṣàfikún ọjà\n' +
+      '• *CATALOGUE* — Wo àwọn ọjà rẹ\n' +
+      '• *HOURS* — Ṣàtúnṣe àkókò iṣẹ́\n' +
+      '• *PAUSE* tàbí *CLOSE SHOP* — Dáwọ̀ dúró ilé ìtajà rẹ\n' +
+      '• *RESUME* tàbí *OPEN SHOP* — Tún ṣí ilé ìtajà rẹ\n' +
+      '• *EDITED* — Sọ fún bot pé o ti ṣàtúnṣe sheet rẹ\n' +
+      '• *HANDLED* — Samisi pé ọ̀rọ̀ alabara ti parí',
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -860,5 +1024,46 @@ export const translations: Record<Language, Record<string, string>> = {
       'Kuna so ku maimaita shi? Amsa *YES* don sake oda nan take\n' +
       'ko *MENU* don ganin komai 😊',
     vendor_dashboard_welcome: '👋 Maraba da dawowa, *{businessName}*!\n\nMene ne kake so yi?',
+    cmd_orders_none: 'Ba ka yi oda kowane abu ba tukuna.\n\nTẹ *MENU* don fara duba. 😊',
+    cmd_orders_list: '📦 *Oda Ka {count} Na Ƙarshe*\n\n{lines}\n\nTẹ *MENU* don ci gaba da siyayya.',
+    help_unknown:
+      '📋 *Umarni na Pingmart*\n\n' +
+      '🌐 *Yana aiki koyaushe:*\n' +
+      '• *MENU* ko *HOME* — Fara\n' +
+      '• *LANGUAGE* — Canza yarenka\n' +
+      '• *HELP* ko *ASSIST* — Duba wannan jerin\n' +
+      '• *CANCEL* ko *COMOT* — Soke abin da kake yi\n' +
+      '• *RESET* — Share komai, fara sabon',
+    help_customer:
+      '📋 *Umarni na Pingmart*\n\n' +
+      '🌐 *Yana aiki koyaushe:*\n' +
+      '• *MENU* ko *HOME* — Babban allon\n' +
+      '• *LANGUAGE* — Canza yarenka\n' +
+      '• *HELP* ko *ASSIST* — Jerin umarni\n' +
+      '• *CANCEL* ko *COMOT* — Soke matakin yanzu\n' +
+      '• *SKIP* — Tsallake matakin zaɓi\n' +
+      '• *RESET* — Fara daga farko gaba ɗaya\n\n' +
+      '🛒 *Siyayya:*\n' +
+      '• *CART* ko *MY CART* — Duba kwandon ka\n' +
+      '• *DONE* ko *I DON FINISH* — Je biya\n' +
+      '• *CLEAR* — Wanke kwandon ka\n' +
+      '• *ORDERS* — Oda ka na ƙarshe 5',
+    help_vendor:
+      '📋 *Umarni na Pingmart*\n\n' +
+      '🌐 *Yana aiki koyaushe:*\n' +
+      '• *MENU* ko *HOME* — Dashboard\n' +
+      '• *LANGUAGE* — Canza yarenka\n' +
+      '• *HELP* ko *ASSIST* — Jerin umarni\n' +
+      '• *CANCEL* ko *COMOT* — Soke matakin yanzu\n' +
+      '• *RESET* — Fara sabon\n\n' +
+      '🏪 *Gudanar da Shago:*\n' +
+      '• *DASHBOARD* — Je dashboard ɗinka\n' +
+      '• *ADD* — Ƙara kaya\n' +
+      '• *CATALOGUE* — Duba kayanka\n' +
+      '• *HOURS* — Sabunta awannin aiki\n' +
+      '• *PAUSE* ko *CLOSE SHOP* — Dakatar da shagonka\n' +
+      '• *RESUME* ko *OPEN SHOP* — Sake buɗe shago\n' +
+      '• *EDITED* — Sanar da bot cewa ka gyara sheet ɗinka\n' +
+      '• *HANDLED* — Nuna cewa matsalar abokin ciniki ta ƙare',
   },
 };

@@ -196,6 +196,20 @@ export async function handleVendorDashboard(
     return;
   }
 
+  // ── Shorthand command shortcuts — work even when a multi-step flow is active ──
+  // These bypass the state check so DASHBOARD, ADD, CATALOGUE, HOURS, PAUSE,
+  // RESUME, and their Pidgin aliases always jump to the right top-level action
+  // regardless of what step the vendor is currently on.
+  const VENDOR_SHORTCUTS = new Set([
+    'DASHBOARD', 'ADD', 'CATALOGUE', 'HOURS',
+    'PAUSE', 'CLOSE SHOP', 'RESUME', 'OPEN SHOP',
+  ]);
+  if (VENDOR_SHORTCUTS.has(norm)) {
+    await clearVendorState(phone);
+    await handleTopLevelCommand(phone, message, norm, vendor);
+    return;
+  }
+
   const state = await getVendorState(phone);
   if (state) {
     await handleStateReply(phone, message, norm, vendor, state);
@@ -217,8 +231,25 @@ async function handleTopLevelCommand(
     case 'HANDLED':
       await resolveEscalation(phone, vendor);
       return;
+    // ── Shorthand aliases (COMMANDS.md) ────────────────────────────────────
+    case 'DASHBOARD':                             // explicit dashboard jump
+      return showDashboard(phone, vendor);
+    case 'ADD':                                   // shorthand for ADD PRODUCT
     case 'ADD PRODUCT':
       return startAddProduct(phone, vendor);
+    case 'CATALOGUE':                             // vendor catalogue view
+      return showVendorCatalogue(phone, vendor);
+    case 'HOURS':                                 // go directly to hours settings
+      return startHoursSettings(phone, vendor);
+    case 'PAUSE':                                 // shorthand
+    case 'CLOSE SHOP':                            // Pidgin alias
+    case 'PAUSE STORE':
+      return pauseStore(phone, vendor);
+    case 'RESUME':                                // shorthand
+    case 'OPEN SHOP':                             // Pidgin alias
+    case 'RESUME STORE':
+      return resumeStore(phone, vendor);
+    // ── Standard dashboard commands ────────────────────────────────────────
     case 'REMOVE PRODUCT':
       return startRemoveProduct(phone, vendor);
     case 'UPDATE PRICE':
@@ -227,10 +258,6 @@ async function handleTopLevelCommand(
       return showMyOrders(phone, vendor);
     case 'MY LINK':
       return showMyLink(phone, vendor);
-    case 'PAUSE STORE':
-      return pauseStore(phone, vendor);
-    case 'RESUME STORE':
-      return resumeStore(phone, vendor);
     case 'NOTIFICATIONS':
       return startNotifications(phone, vendor);
     case 'SETTINGS':
@@ -358,6 +385,38 @@ async function showDashboard(phone: string, vendor: Vendor): Promise<void> {
     listButtonText: 'Open Menu',
     listHeader: `🛍️ ${vendor.businessName} Dashboard`,
   });
+}
+
+// ─── CATALOGUE (vendor view) ──────────────────────────────────────────────────
+
+async function showVendorCatalogue(phone: string, vendor: Vendor): Promise<void> {
+  const products = await productRepository.findAvailableByVendor(vendor.id);
+  if (!products.length) {
+    await send(
+      phone,
+      `📦 *${vendor.businessName}* — No products yet.\n\nType *ADD* to add your first product.`,
+    );
+    return;
+  }
+  const lines = products.map((p, i) => `${i + 1}. *${p.name}* — ${formatNaira(p.price)}`);
+  await send(
+    phone,
+    `📦 *${vendor.businessName} — Products (${products.length})*\n\n${lines.join('\n')}\n\n` +
+    `Type *ADD* to add a product or *DASHBOARD* to go back.`,
+  );
+}
+
+// ─── HOURS (settings shortcut) ────────────────────────────────────────────────
+
+async function startHoursSettings(phone: string, vendor: Vendor): Promise<void> {
+  await setVendorState(phone, { step: 'SETTINGS_HOURS' });
+  await send(
+    phone,
+    `🕐 *Update Working Hours*\n\n` +
+    `Enter your hours in *HH:MM-HH:MM* format (e.g. 09:00-22:00)\n\n` +
+    `(Current: *${vendor.workingHoursStart ?? '08:00'}–${vendor.workingHoursEnd ?? '21:00'}*)\n\n` +
+    `Type *CANCEL* to go back.`,
+  );
 }
 
 // ─── ADD PRODUCT ──────────────────────────────────────────────────────────────

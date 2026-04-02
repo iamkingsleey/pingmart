@@ -37,6 +37,7 @@ import { logger, maskPhone } from '../utils/logger';
 import { ConversationState, SessionData } from '../types';
 import { formatNaira } from '../utils/formatters';
 import { t, Language } from '../i18n';
+import { interceptCommand } from './commands.service';
 import { resolveStoreVocabulary, applyVocabulary } from '../utils/store-vocabulary';
 import { appendToHistory, getHistory } from '../utils/conversationHistory';
 import {
@@ -261,22 +262,31 @@ export async function routeIncomingMessage(
     return;
   }
 
+  // ── Command interceptor — runs before any routing or LLM logic ──────────
+  // Handles RESET, HELP/ASSIST, ORDERS, LANGUAGE (non-customer), and all
+  // vendor shorthand commands. Also normalizes Pidgin aliases (HOME→MENU,
+  // COMOT→CANCEL, MY CART→CART, I DON FINISH→DONE) into their canonical form.
+  // Source of truth for all commands: /pingmart/COMMANDS.md
+  const cmdResult = await interceptCommand(senderPhone, message);
+  if (cmdResult.handled) return;
+  const effectiveMessage = cmdResult.normalizedMessage ?? message;
+
   // ── Pipeline: history tracking + LLM classification ──────────────────────
   // Step 1: Record user message in conversation history (all messages, always).
   // Step 4: Run LLM intent classification on natural-language messages.
   // Skipped for images/documents (already returned above).
-  await appendToHistory(senderPhone, 'user', message);
-  const pipelineResult = await runLLMPipeline(senderPhone, message);
+  await appendToHistory(senderPhone, 'user', effectiveMessage);
+  const pipelineResult = await runLLMPipeline(senderPhone, effectiveMessage);
   if (!pipelineResult.shouldContinue) return;
 
   // ── 2. Pending router-state replies ──────────────────────────────────────
   const routerState = await redis.get(`router:state:${senderPhone}`);
   if (routerState === 'LANG_INIT') {
-    await handleLangInitReply(senderPhone, message, messageId);
+    await handleLangInitReply(senderPhone, effectiveMessage, messageId);
     return;
   }
   if (routerState === 'SHOP_OR_SELL') {
-    await handleShopOrSellReply(senderPhone, message);
+    await handleShopOrSellReply(senderPhone, effectiveMessage);
     return;
   }
 
@@ -285,9 +295,9 @@ export async function routeIncomingMessage(
   // and the time the user tapped (> 30 min gap, or a Redis flush), we still
   // want to honour the button tap rather than falling through to unrecognised
   // sender logic and showing the language screen again.
-  const msgUpper = message.trim().toUpperCase();
+  const msgUpper = effectiveMessage.trim().toUpperCase();
   if (msgUpper === 'SELL_ON_PINGMART' || msgUpper === 'SHOP_FROM_STORE' || msgUpper === 'SETUP_SUPPORT_CHANNEL') {
-    await handleShopOrSellReply(senderPhone, message);
+    await handleShopOrSellReply(senderPhone, effectiveMessage);
     return;
   }
 
@@ -359,16 +369,16 @@ export async function routeIncomingMessage(
           sessionStore: sessionVendor.storeCode ?? sessionVendor.id,
         });
         if ((sessionVendor as any).mode === 'SUPPORT') {
-          await handleSupportCustomerMessage(senderPhone, message, sessionVendor);
+          await handleSupportCustomerMessage(senderPhone, effectiveMessage, sessionVendor);
         } else {
-          await processIncomingMessage(senderPhone, message, sessionVendor.whatsappNumber, undefined);
+          await processIncomingMessage(senderPhone, effectiveMessage, sessionVendor.whatsappNumber, undefined);
         }
         return;
       }
     }
 
     logger.info('Router → vendor dashboard (ownerPhone match)', { from: maskPhone(senderPhone) });
-    await handleVendorMessage(senderPhone, message, vendorByOwnerPhone);
+    await handleVendorMessage(senderPhone, effectiveMessage, vendorByOwnerPhone);
     return;
   }
 
@@ -379,7 +389,7 @@ export async function routeIncomingMessage(
   });
   if (notifRecord) {
     logger.info('Router → vendor staff (notification number)', { from: maskPhone(senderPhone) });
-    await handleVendorStaffMessage(senderPhone, message, notifRecord.vendor, notifRecord.isPrimary);
+    await handleVendorStaffMessage(senderPhone, effectiveMessage, notifRecord.vendor, notifRecord.isPrimary);
     return;
   }
 
@@ -394,9 +404,9 @@ export async function routeIncomingMessage(
       logger.info('Router → existing customer session', { from: maskPhone(senderPhone) });
       // Pass undefined for messageId — dedup was already handled above
       if ((vendor as any).mode === 'SUPPORT') {
-        await handleSupportCustomerMessage(senderPhone, message, vendor);
+        await handleSupportCustomerMessage(senderPhone, effectiveMessage, vendor);
       } else {
-        await processIncomingMessage(senderPhone, message, vendor.whatsappNumber, undefined);
+        await processIncomingMessage(senderPhone, effectiveMessage, vendor.whatsappNumber, undefined);
       }
       return;
     }
@@ -407,7 +417,7 @@ export async function routeIncomingMessage(
   const v1Vendor = await vendorRepository.findByWhatsAppNumber(senderPhone);
   if (v1Vendor) {
     logger.info('Router → v1 vendor (whatsappNumber match)', { from: maskPhone(senderPhone) });
-    await handleVendorStatusCommand(senderPhone, message);
+    await handleVendorStatusCommand(senderPhone, effectiveMessage);
     return;
   }
 

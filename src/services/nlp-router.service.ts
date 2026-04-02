@@ -20,6 +20,15 @@ const KNOWN_KEYWORDS = new Set([
   'HELP', 'STATUS', 'ORDER STATUS',
   // Cart review button IDs — must pass through unchanged
   'CONFIRM_CART', 'EDIT_CART',
+  // Global command aliases (COMMANDS.md) — interceptor normalizes these before
+  // NLP router runs, but listing them here ensures they skip LLM if they ever
+  // reach this layer (e.g. in processIncomingMessage for active customer sessions).
+  'HOME',         // → MENU
+  'ASSIST',       // → HELP
+  'COMOT',        // → CANCEL (Pidgin)
+  'MY CART',      // → CART  (Pidgin)
+  'I DON FINISH', // → DONE  (Pidgin)
+  'ORDERS',       // customer order history command
   '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ]);
 
