@@ -89,6 +89,12 @@ const envSchema = z.object({
   MONO_PUBLIC_KEY: z.string().optional(),
   // Mono webhook URL — the URL Mono should send events to (informational).
   MONO_WEBHOOK_URL: z.string().optional(),
+
+  // Vendor License Verification — gated feature for restricted business categories.
+  // When true, vendors in restricted categories (pharmacy, healthcare, alcohol, tobacco,
+  // financial_services) must upload a license document before their store goes live.
+  // Prohibited categories (gambling, weapons, etc.) are blocked regardless of this flag.
+  VENDOR_LICENSE_VERIFICATION_ENABLED: z.string().default('false').transform((v) => v.toLowerCase() === 'true'),
 });
 
 const parsed = envSchema.safeParse(process.env);

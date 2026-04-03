@@ -69,14 +69,32 @@ const INTERCEPT_TOKENS = new Set([
   'RESUME',
   'OPEN SHOP',
   // Dev/admin test commands (admin phone gated)
-  'TEST_OWO_PAY',  // initiate a ₦100 OWO fund request for self-testing
+  'TEST_OWO_PAY',   // initiate a ₦100 OWO fund request for self-testing
+  'ADMIN_PENDING',  // list vendors awaiting license review
 ]);
 
-/** Returns true if the raw message is a TEST_OWO_STATUS {id} command. */
+/** Returns the fund request ID if the message is TEST_OWO_STATUS {id}. */
 function isOwoStatusCommand(upper: string): string | null {
   const prefix = 'TEST_OWO_STATUS ';
   if (upper.startsWith(prefix)) return upper.slice(prefix.length).trim();
   return null;
+}
+
+/** Returns vendorId if message is ADMIN_VERIFY {vendorId}. */
+function parseAdminVerify(upper: string): string | null {
+  const prefix = 'ADMIN_VERIFY ';
+  if (upper.startsWith(prefix)) return upper.slice(prefix.length).trim();
+  return null;
+}
+
+/** Returns {vendorId, reason} if message is ADMIN_REJECT {vendorId} {reason}. */
+function parseAdminReject(upper: string): { vendorId: string; reason: string } | null {
+  const prefix = 'ADMIN_REJECT ';
+  if (!upper.startsWith(prefix)) return null;
+  const rest = upper.slice(prefix.length).trim();
+  const spaceIdx = rest.indexOf(' ');
+  if (spaceIdx === -1) return null;
+  return { vendorId: rest.slice(0, spaceIdx).trim(), reason: rest.slice(spaceIdx + 1).trim() };
 }
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -103,10 +121,22 @@ export async function interceptCommand(
   const upper = rawMessage.trim().toUpperCase().replace(/\s+/g, ' ');
 
   // ── Dev/admin test commands — checked before fast path ───────────────────
-  // TEST_OWO_STATUS has a dynamic argument so it can't live in INTERCEPT_TOKENS.
+  // Dynamic-argument commands can't live in INTERCEPT_TOKENS; check them first.
   const owoStatusId = isOwoStatusCommand(upper);
   if (upper === 'TEST_OWO_PAY' || owoStatusId !== null) {
     await handleOwoTestCommand(phone, upper === 'TEST_OWO_PAY' ? null : owoStatusId);
+    return { handled: true };
+  }
+
+  const adminVerifyId = parseAdminVerify(upper);
+  if (adminVerifyId !== null) {
+    await handleAdminVerifyCommand(phone, adminVerifyId);
+    return { handled: true };
+  }
+
+  const adminRejectArgs = parseAdminReject(upper);
+  if (adminRejectArgs !== null) {
+    await handleAdminRejectCommand(phone, adminRejectArgs.vendorId, adminRejectArgs.reason);
     return { handled: true };
   }
 
@@ -163,6 +193,13 @@ export async function interceptCommand(
   if (upper === 'ORDERS') {
     if (!customer) return { handled: false }; // unknown sender — fall through
     await handleOrders(phone, language, customer.id);
+    return { handled: true };
+  }
+
+  // ── ADMIN_PENDING ─────────────────────────────────────────────────────────
+  // Lists vendors awaiting license review. Admin-gated.
+  if (upper === 'ADMIN_PENDING') {
+    await handleAdminPendingCommand(phone);
     return { handled: true };
   }
 
@@ -436,6 +473,137 @@ async function handleOwoTestCommand(phone: string, fundRequestId: string | null)
     logger.error('[OWO TEST] initiatePayment error', { error: msg, phone: maskPhone(phone) });
     await send(`❌ initiatePayment error:\n\n${msg}`);
   }
+}
+
+// ─── Admin License Verification Commands ─────────────────────────────────────
+//
+// ADMIN_PENDING              — list all vendors with verificationStatus = PENDING_REVIEW
+// ADMIN_VERIFY {vendorId}    — approve a vendor's license → set isActive=true, APPROVED
+// ADMIN_REJECT {vendorId} {reason} — reject a vendor's license → set REJECTED + note
+//
+// All commands are gated: only ADMIN_PHONE_NUMBER can use them.
+
+/** Shared admin gate — returns true if sender is the admin, false (+ warning reply) otherwise. */
+async function isAdmin(phone: string): Promise<boolean> {
+  const send = async (text: string) => { await messageQueue.add({ to: phone, message: text }); };
+  const adminPhone = env.ADMIN_PHONE_NUMBER;
+  if (!adminPhone) {
+    await send(`⚠️ ADMIN_PHONE_NUMBER is not set. Cannot run admin commands.`);
+    return false;
+  }
+  const normPhone = phone.replace(/^\+/, '');
+  if (normPhone !== adminPhone.replace(/^\+/, '')) {
+    logger.warn('Admin command rejected — not admin', { from: maskPhone(phone) });
+    return false; // silently ignore non-admin senders
+  }
+  return true;
+}
+
+async function handleAdminPendingCommand(phone: string): Promise<void> {
+  const send = async (text: string) => { await messageQueue.add({ to: phone, message: text }); };
+  if (!(await isAdmin(phone))) return;
+
+  const vendors = await prisma.vendor.findMany({
+    where: { verificationStatus: 'PENDING_REVIEW' },
+    select: { id: true, businessName: true, businessCategory: true, licenseDocumentType: true, createdAt: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  if (!vendors.length) {
+    await send(`✅ No vendors pending license review.`);
+    return;
+  }
+
+  const lines = vendors.map((v, i) =>
+    `${i + 1}. *${v.businessName}*\n` +
+    `   ID: \`${v.id}\`\n` +
+    `   Category: ${v.businessCategory ?? '—'}\n` +
+    `   Doc: ${v.licenseDocumentType ?? '—'}`,
+  );
+
+  await send(
+    `📋 *${vendors.length} vendor(s) pending license review:*\n\n` +
+    `${lines.join('\n\n')}\n\n` +
+    `To approve: \`ADMIN_VERIFY {vendorId}\`\n` +
+    `To reject:  \`ADMIN_REJECT {vendorId} {reason}\``,
+  );
+}
+
+async function handleAdminVerifyCommand(phone: string, vendorId: string): Promise<void> {
+  const send = async (text: string) => { await messageQueue.add({ to: phone, message: text }); };
+  if (!(await isAdmin(phone))) return;
+
+  const vendor = await prisma.vendor.findUnique({
+    where: { id: vendorId },
+    select: { id: true, businessName: true, verificationStatus: true, whatsappNumber: true, ownerPhone: true },
+  });
+
+  if (!vendor) {
+    await send(`❌ Vendor not found: \`${vendorId}\``);
+    return;
+  }
+  if (vendor.verificationStatus !== 'PENDING_REVIEW') {
+    await send(`⚠️ *${vendor.businessName}* is not in PENDING_REVIEW (current: ${vendor.verificationStatus}).`);
+    return;
+  }
+
+  await prisma.vendor.update({
+    where: { id: vendorId },
+    data: { isActive: true, verificationStatus: 'APPROVED', verificationNote: null },
+  });
+
+  logger.info('Admin approved vendor license', { vendorId, by: maskPhone(phone) });
+  await send(`✅ *${vendor.businessName}* approved — store is now live.`);
+
+  // Notify the vendor
+  const vendorPhone = vendor.ownerPhone ?? vendor.whatsappNumber;
+  await messageQueue.add({
+    to: vendorPhone,
+    message:
+      `🎉 *Your store is now LIVE!*\n\n` +
+      `Our team has reviewed and approved your business license.\n` +
+      `*${vendor.businessName}* is now visible to customers on Pingmart. ✅\n\n` +
+      `Share your store link to start receiving orders!`,
+  });
+}
+
+async function handleAdminRejectCommand(phone: string, vendorId: string, reason: string): Promise<void> {
+  const send = async (text: string) => { await messageQueue.add({ to: phone, message: text }); };
+  if (!(await isAdmin(phone))) return;
+
+  const vendor = await prisma.vendor.findUnique({
+    where: { id: vendorId },
+    select: { id: true, businessName: true, verificationStatus: true, whatsappNumber: true, ownerPhone: true },
+  });
+
+  if (!vendor) {
+    await send(`❌ Vendor not found: \`${vendorId}\``);
+    return;
+  }
+  if (vendor.verificationStatus !== 'PENDING_REVIEW') {
+    await send(`⚠️ *${vendor.businessName}* is not in PENDING_REVIEW (current: ${vendor.verificationStatus}).`);
+    return;
+  }
+
+  await prisma.vendor.update({
+    where: { id: vendorId },
+    data: { isActive: false, verificationStatus: 'REJECTED', verificationNote: reason },
+  });
+
+  logger.info('Admin rejected vendor license', { vendorId, reason, by: maskPhone(phone) });
+  await send(`❌ *${vendor.businessName}* rejected. Reason: ${reason}`);
+
+  // Notify the vendor
+  const vendorPhone = vendor.ownerPhone ?? vendor.whatsappNumber;
+  await messageQueue.add({
+    to: vendorPhone,
+    message:
+      `⚠️ *License Verification Update*\n\n` +
+      `Unfortunately, we were unable to approve your business license for *${vendor.businessName}*.\n\n` +
+      `*Reason:* ${reason}\n\n` +
+      `Please re-submit a valid license document and we'll review it again. ` +
+      `Reply with your updated document to restart the process.`,
+  });
 }
 
 // ─── Language selection (inline — avoids circular import from router.service.ts) ─

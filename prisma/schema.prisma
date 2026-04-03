@@ -78,6 +78,18 @@ model Vendor {
   // Beneficiary ID returned by Mono after linking vendor payout account.
   owoBeneficiaryId    String?
 
+  // ── Vendor License Verification (gated: VENDOR_LICENSE_VERIFICATION_ENABLED) ─
+  // Required for restricted business categories (pharmacy, healthcare, alcohol,
+  // tobacco, financial_services). Prohibited categories are blocked outright.
+  businessCategory     String?
+  licenseRequired      Boolean  @default(false)
+  licenseDocumentUrl   String?
+  licenseDocumentType  String?
+  licenseExpiryDate    DateTime?
+  // NOT_REQUIRED | PENDING_REVIEW | APPROVED | REJECTED
+  verificationStatus   String   @default("NOT_REQUIRED")
+  verificationNote     String?
+
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 

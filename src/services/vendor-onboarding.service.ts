@@ -116,6 +116,11 @@ interface CollectedData {
   // sourceUrl: original Google Sheets URL, or '' for file uploads.
   pendingImportSourceUrl?: string;
   pendingImportAwaitingEdit?: boolean;
+
+  // License verification (set when vendor picks a restricted business category)
+  licenseRequired?: boolean;
+  licenseDocumentUrl?: string;
+  licenseDocumentType?: string;
 }
 
 // ─── Required info fields — all must be present before advancing ──────────────
@@ -485,10 +490,20 @@ export async function handleVendorOnboarding(
   if (message.startsWith('CATEGORY:')) {
     const categoryKey = message.slice(9).toLowerCase().trim();
     const SERVICE_CATEGORIES = new Set(['laundry', 'salon', 'cleaning', 'repair', 'tailoring', 'logistics', 'consulting', 'events']);
+    // Restricted: allowed but require license verification before going live
+    const RESTRICTED_CATEGORIES = new Set(['pharmacy', 'healthcare', 'alcohol', 'tobacco', 'financial_services']);
+    // Prohibited: blocked outright regardless of VENDOR_LICENSE_VERIFICATION_ENABLED
+    const PROHIBITED_CATEGORIES = new Set(['adult_content', 'gambling', 'weapons', 'drugs', 'pyramid_scheme']);
     const VALID_CATEGORIES: Record<string, string> = {
       food: 'food', fashion: 'fashion', beauty: 'beauty', digital: 'digital', general: 'general',
       laundry: 'laundry', salon: 'salon', cleaning: 'cleaning', repair: 'repair',
       tailoring: 'tailoring', logistics: 'logistics', consulting: 'consulting', events: 'events',
+      // Restricted
+      pharmacy: 'pharmacy', healthcare: 'healthcare', alcohol: 'alcohol',
+      tobacco: 'tobacco', financial_services: 'financial_services',
+      // Prohibited (in map so we detect them; blocked below)
+      adult_content: 'adult_content', gambling: 'gambling', weapons: 'weapons',
+      drugs: 'drugs', pyramid_scheme: 'pyramid_scheme',
     };
     const CATEGORY_LABELS: Record<string, string> = {
       food: '🍔 Food & Drinks', fashion: '👗 Fashion & Clothing',
@@ -496,14 +511,30 @@ export async function handleVendorOnboarding(
       laundry: '👔 Laundry', salon: '💇 Salon & Spa', cleaning: '🧹 Cleaning Services',
       repair: '🔧 Repairs & Maintenance', tailoring: '🧵 Tailoring', logistics: '🚚 Logistics',
       consulting: '💼 Consulting', events: '🎉 Events',
+      pharmacy: '💊 Pharmacy & Drugs', healthcare: '🏥 Healthcare', alcohol: '🍺 Alcohol & Beverages',
+      tobacco: '🚬 Tobacco', financial_services: '🏦 Financial Services',
     };
     const resolved = VALID_CATEGORIES[categoryKey];
     if (resolved) {
+      // Block prohibited categories outright
+      if (PROHIBITED_CATEGORIES.has(resolved)) {
+        await messageQueue.add({
+          to: phone,
+          message:
+            `❌ *Category Not Permitted*\n\n` +
+            `Sorry, this business category is not allowed on Pingmart.\n\n` +
+            `Please choose a different category to continue setting up your store.`,
+        });
+        return;
+      }
+
       const isService = SERVICE_CATEGORIES.has(resolved);
+      const isRestricted = RESTRICTED_CATEGORIES.has(resolved);
       const newData: CollectedData = {
         ...data,
         businessType: resolved,
         ...(isService ? { vendorMode: 'support' } : {}),
+        ...(isRestricted ? { licenseRequired: true } : {}),
       };
       await prisma.vendorSetupSession.update({
         where: { id: session.id },
@@ -518,6 +549,17 @@ export async function handleVendorOnboarding(
         to: phone,
         message: CATEGORY_GREAT_CHOICE[catLang](CATEGORY_LABELS[resolved] ?? resolved),
       });
+      if (isRestricted && env.VENDOR_LICENSE_VERIFICATION_ENABLED) {
+        // Inform vendor up-front that a license will be required before going live
+        await messageQueue.add({
+          to: phone,
+          message:
+            `📋 *License Verification Required*\n\n` +
+            `This business category requires a valid operating license.\n` +
+            `We'll ask you to upload your license document at the end of setup.\n` +
+            `Your store will go live once we've reviewed and approved it. ✅`,
+        });
+      }
       return;
     }
   }
@@ -589,6 +631,9 @@ export async function handleVendorOnboarding(
       break;
     case 'SUPPORT_CONFIRMATION':
       await handleSupportConfirmation(phone, message, vendor, session, data as unknown as import('./support-onboarding.service').SupportCollectedData);
+      break;
+    case 'LICENSE_COLLECTION':
+      await handleLicenseCollection(phone, vendor, session, data);
       break;
     default:
       // Shouldn't happen — re-show welcome to unstick
@@ -1924,15 +1969,30 @@ async function handleNotificationSetup(
   const limit  = PLAN_NOTIFICATION_LIMITS[plan] ?? 1;
   const extra  = data.notificationNumbers ?? [];
 
-  // ── Helper: save numbers and advance to CONFIRMATION or SUPPORT_CONFIRMATION ─
+  // ── Helper: save numbers and advance to next step ────────────────────────────
   async function advanceToConfirmation(numbers: string[]): Promise<void> {
-    const newData  = { ...data, notificationNumbers: numbers };
-    const nextStep = newData.vendorMode === 'support' ? 'SUPPORT_CONFIRMATION' : 'CONFIRMATION';
+    const newData = { ...data, notificationNumbers: numbers };
+    // Route to LICENSE_COLLECTION if vendor is in a restricted category and
+    // hasn't uploaded a document yet (and the feature flag is on)
+    let nextStep: string;
+    if (
+      env.VENDOR_LICENSE_VERIFICATION_ENABLED &&
+      newData.licenseRequired &&
+      !newData.licenseDocumentUrl
+    ) {
+      nextStep = 'LICENSE_COLLECTION';
+    } else if (newData.vendorMode === 'support') {
+      nextStep = 'SUPPORT_CONFIRMATION';
+    } else {
+      nextStep = 'CONFIRMATION';
+    }
     await prisma.vendorSetupSession.update({
       where: { id: session.id },
       data:  { step: nextStep, collectedData: newData as unknown as PrismaJson },
     });
-    if (newData.vendorMode === 'support') {
+    if (nextStep === 'LICENSE_COLLECTION') {
+      await showLicenseCollectionPrompt(phone, newData);
+    } else if (newData.vendorMode === 'support') {
       await showSupportConfirmation(
         phone,
         vendor,
@@ -2191,6 +2251,112 @@ async function showConfirmation(phone: string, vendorId: string, data: Collected
   });
 }
 
+// ─── Step: LICENSE_COLLECTION ─────────────────────────────────────────────────
+//
+// This step is only reached when VENDOR_LICENSE_VERIFICATION_ENABLED=true AND
+// the vendor's business category is in RESTRICTED_CATEGORIES.
+// We wait for an image (routed here by routeImageMessage in router.service.ts).
+// Any text message just re-prompts.
+
+async function showLicenseCollectionPrompt(phone: string, data: CollectedData): Promise<void> {
+  const catLabel = capitalise(data.businessType ?? 'your business type').replace(/_/g, ' ');
+  await messageQueue.add({
+    to: phone,
+    message:
+      `📄 *Business License Required*\n\n` +
+      `Because you're in the *${catLabel}* category, we need to verify your business license before your store goes live.\n\n` +
+      `Please send a *photo or scan* of your:\n` +
+      `• CAC Business Registration Certificate, *or*\n` +
+      `• Relevant operating license (NAFDAC, CBN, NPC, etc.)\n\n` +
+      `_We'll review it within 24–48 hours and notify you once approved._`,
+  });
+}
+
+async function handleLicenseCollection(
+  phone: string,
+  _vendor: Vendor,
+  _session: VendorSetupSession,
+  data: CollectedData,
+): Promise<void> {
+  // Text messages during LICENSE_COLLECTION just re-prompt for the image
+  await showLicenseCollectionPrompt(phone, data);
+}
+
+/**
+ * Called by the router when a vendor in the LICENSE_COLLECTION step sends an image.
+ * Downloads the image, uploads to Cloudinary, then advances to CONFIRMATION.
+ *
+ * Exported so router.service.ts can call it when step === 'LICENSE_COLLECTION'.
+ */
+export async function handleVendorLicenseDocument(
+  phone: string,
+  imageMediaId: string,
+  caption: string,
+  vendor: Vendor,
+  session: VendorSetupSession,
+): Promise<void> {
+  const data = (session.collectedData as unknown as CollectedData) ?? { history: [] };
+
+  await messageQueue.add({ to: phone, message: `📤 Uploading your document…` });
+
+  // Download from WhatsApp CDN
+  let imageBuffer: Buffer;
+  try {
+    const mediaRes = await fetch(`https://graph.facebook.com/v19.0/${imageMediaId}`, {
+      headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` },
+    });
+    if (!mediaRes.ok) throw new Error(`Media URL fetch ${mediaRes.status}`);
+    const { url } = await mediaRes.json() as { url: string };
+    const imgRes = await fetch(url, { headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` } });
+    if (!imgRes.ok) throw new Error(`Image download ${imgRes.status}`);
+    imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+  } catch (err) {
+    logger.error('Failed to download license document', { err, phone: maskPhone(phone) });
+    await messageQueue.add({ to: phone, message: `😅 I couldn't download that image. Please try sending it again.` });
+    return;
+  }
+
+  // Upload to Cloudinary
+  let documentUrl: string;
+  try {
+    documentUrl = await uploadProductImageBuffer(imageBuffer, `license-${vendor.id}-${Date.now()}`);
+  } catch (err) {
+    logger.error('Failed to upload license document to Cloudinary', { err, phone: maskPhone(phone) });
+    await messageQueue.add({ to: phone, message: `😅 Document upload failed. Please try sending it again.` });
+    return;
+  }
+
+  // Use caption as document type hint (e.g. "NAFDAC licence"), fallback to generic label
+  const docType = caption?.trim() || 'Business License';
+
+  // Save and advance to CONFIRMATION
+  const newData: CollectedData = {
+    ...data,
+    licenseDocumentUrl: documentUrl,
+    licenseDocumentType: docType,
+  };
+  await prisma.vendorSetupSession.update({
+    where: { id: session.id },
+    data: { step: 'CONFIRMATION', collectedData: newData as unknown as PrismaJson },
+  });
+
+  logger.info('Vendor license document received', {
+    vendorId: vendor.id,
+    phone: maskPhone(phone),
+    docType,
+  });
+
+  await messageQueue.add({
+    to: phone,
+    message:
+      `✅ *License document received!*\n\n` +
+      `We'll review it within 24–48 hours.\n\n` +
+      `Let's finish setting up your store — tap *Go Live* to submit, and we'll notify you once your license is approved and your store is live.`,
+  });
+
+  await showConfirmation(phone, vendor.id, newData);
+}
+
 // ─── Activation ───────────────────────────────────────────────────────────────
 
 async function activateStore(
@@ -2201,6 +2367,8 @@ async function activateStore(
 ): Promise<void> {
   const pingmartPhone = env.PINGMART_PHONE_NUMBER ?? '234XXXXXXXXXX';
   const storeCode = data.storeCode ?? '';
+  // Restricted vendors (licenseRequired=true) stay inactive until admin approves
+  const needsReview = data.licenseRequired && data.licenseDocumentUrl;
 
   // Save all collected info in a transaction
   await prisma.$transaction(async (tx) => {
@@ -2208,7 +2376,6 @@ async function activateStore(
     const bankAccountNumber = data.bankAccountNumber
       ? encryptBankAccount(data.bankAccountNumber.replace('confirmed:', ''), env.ENCRYPTION_KEY)
       : null;
-
     await tx.vendor.update({
       where: { id: vendor.id },
       data: {
@@ -2223,8 +2390,16 @@ async function activateStore(
         bankName: data.bankName?.replace('confirmed:', '') ?? null,
         bankAccountNumber,
         bankAccountName: data.bankAccountName ?? null,
-        isActive: true,
+        isActive: !needsReview,
         isPaused: false,
+        // License verification fields
+        ...(data.licenseRequired ? {
+          licenseRequired: true,
+          businessCategory: data.businessType ?? null,
+          licenseDocumentUrl: data.licenseDocumentUrl ?? null,
+          licenseDocumentType: data.licenseDocumentType ?? null,
+          verificationStatus: needsReview ? 'PENDING_REVIEW' : 'NOT_REQUIRED',
+        } : {}),
       },
     });
 
@@ -2271,23 +2446,40 @@ async function activateStore(
     });
   });
 
-  logger.info('Vendor store activated', { vendorId: vendor.id, storeCode, phone: maskPhone(phone) });
-
-  // Message 1 — celebration + store link
-  await messageQueue.add({
-    to: phone,
-    message:
-      `🚀 *${data.businessName} is now LIVE on Pingmart!*\n\n` +
-      `🔗 *Your Store Link*\n` +
-      `wa.me/${pingmartPhone}?text=${storeCode}\n\n` +
-      `_Tap the link to preview your store as a customer_\n\n` +
-      `📣 *Share your link on:*\n` +
-      `📱 WhatsApp Status\n` +
-      `📸 Instagram Bio\n` +
-      `🖨️ Business flyers\n` +
-      `💬 Customer groups\n\n` +
-      `_You can manage your store anytime by messaging this number._`,
+  logger.info('Vendor store activated', {
+    vendorId: vendor.id, storeCode, phone: maskPhone(phone),
+    verificationStatus: needsReview ? 'PENDING_REVIEW' : 'NOT_REQUIRED',
   });
+
+  // Message 1 — celebration (or pending-review notice for restricted vendors)
+  if (needsReview) {
+    await messageQueue.add({
+      to: phone,
+      message:
+        `✅ *${data.businessName} setup is complete!*\n\n` +
+        `🔍 *License Review Pending*\n` +
+        `Your store is set up and ready to go, but it won't be visible to customers until our team reviews your license document.\n\n` +
+        `⏱️ *Review time:* 24–48 hours\n\n` +
+        `You'll receive a WhatsApp notification here once your store is approved and live.\n\n` +
+        `_Your store link will be:_\n` +
+        `wa.me/${pingmartPhone}?text=${storeCode}`,
+    });
+  } else {
+    await messageQueue.add({
+      to: phone,
+      message:
+        `🚀 *${data.businessName} is now LIVE on Pingmart!*\n\n` +
+        `🔗 *Your Store Link*\n` +
+        `wa.me/${pingmartPhone}?text=${storeCode}\n\n` +
+        `_Tap the link to preview your store as a customer_\n\n` +
+        `📣 *Share your link on:*\n` +
+        `📱 WhatsApp Status\n` +
+        `📸 Instagram Bio\n` +
+        `🖨️ Business flyers\n` +
+        `💬 Customer groups\n\n` +
+        `_You can manage your store anytime by messaging this number._`,
+    });
+  }
 
   // Message 2 — dashboard list so vendor can act immediately
   await messageQueue.add({

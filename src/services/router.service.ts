@@ -27,7 +27,7 @@ import { sessionRepository } from '../repositories/session.repository';
 import { orderRepository } from '../repositories/order.repository';
 import { processIncomingMessage } from './order/order.service';
 import { handleVendorStatusCommand } from './delivery/physicalDelivery.service';
-import { startVendorOnboarding, handleVendorOnboarding, handleVendorProductPhoto, handleVendorDocument } from './vendor-onboarding.service';
+import { startVendorOnboarding, handleVendorOnboarding, handleVendorProductPhoto, handleVendorLicenseDocument, handleVendorDocument } from './vendor-onboarding.service';
 import { handleVendorDashboard } from './vendor-management.service';
 import { handleSupportCustomerMessage, showSupportWelcome } from './support-customer.service';
 import { handleSupportVendorDashboard } from './support-vendor.service';
@@ -939,11 +939,17 @@ async function routeImageMessage(
     const setupSession = await prisma.vendorSetupSession.findUnique({
       where: { vendorId: vendor.id },
     });
-    if (setupSession && !setupSession.completedAt && setupSession.step === 'ADDING_PRODUCTS') {
-      const data = (setupSession.collectedData ?? {}) as Record<string, unknown>;
-      if (data.productInputMode === 'photos') {
-        await handleVendorProductPhoto(phone, imageMediaId, caption, vendor, setupSession);
+    if (setupSession && !setupSession.completedAt) {
+      if (setupSession.step === 'LICENSE_COLLECTION') {
+        await handleVendorLicenseDocument(phone, imageMediaId, caption, vendor, setupSession);
         return;
+      }
+      if (setupSession.step === 'ADDING_PRODUCTS') {
+        const data = (setupSession.collectedData ?? {}) as Record<string, unknown>;
+        if (data.productInputMode === 'photos') {
+          await handleVendorProductPhoto(phone, imageMediaId, caption, vendor, setupSession);
+          return;
+        }
       }
     }
   }

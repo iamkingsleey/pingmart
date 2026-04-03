@@ -47,6 +47,7 @@
 | `DASHBOARD` | —            | Jump straight to your vendor dashboard                                                  |
 | `ADD`       | —            | Go directly to the add products step                                                    |
 | `CATALOGUE` | —            | View your current product list with item numbers and prices                             |
+| `IMAGES`    | —            | Send Image Catalogue _(Coming soon — available after Meta approval)_                    |
 | `HOURS`     | —            | Go directly to the update business hours step                                           |
 | `PAUSE`     | `CLOSE SHOP` | Temporarily pause your store — customers will see a "temporarily unavailable" notice    |
 | `RESUME`    | `OPEN SHOP`  | Reactivate a paused store                                                               |
