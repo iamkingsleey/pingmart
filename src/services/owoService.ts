@@ -45,13 +45,25 @@ export interface OwoPayment {
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
- * Normalises a WhatsApp phone number to the 234XXXXXXXXXX format Mono expects.
- * Strips leading +, replaces local 0 prefix with country code 234.
+ * Normalises a WhatsApp/Nigerian phone number to the 234XXXXXXXXXX format Mono expects.
+ *
+ * Handles all input forms this codebase may produce:
+ *   +2348012345678   → 2348012345678  (E.164 with + prefix)
+ *   2348012345678    → 2348012345678  (already correct)
+ *   08012345678      → 2348012345678  (local 0 prefix)
+ *   2348012345678@s.whatsapp.net → 2348012345678  (Baileys-style JID — defensive)
+ *   234 801-234-5678 → 2348012345678  (spaces/dashes stripped)
+ *
+ * NOTE: Mono OWO API requires 234 format with NO leading + and NO suffix.
  */
-function normalizePhone(phone: string): string {
+export function normalisePhone(phone: string): string {
+  // Strip @s.whatsapp.net and any similar JID suffix
+  let p = phone.split('@')[0];
+  // Strip all non-digit characters except a potential leading +
+  p = p.replace(/[^\d+]/g, '');
   // Remove leading +
-  let p = phone.replace(/^\+/, '');
-  // Replace leading 0 with 234 (local Nigerian format)
+  p = p.replace(/^\+/, '');
+  // Replace leading 0 with 234 (local Nigerian 11-digit format)
   if (p.startsWith('0')) p = '234' + p.slice(1);
   return p;
 }
@@ -103,25 +115,54 @@ async function owoFetch(
 export async function checkUserStatus(phone: string): Promise<OwoUserStatus> {
   if (!env.OWO_PAYMENTS_ENABLED) return 'NOT_FOUND';
 
+  const normalised = normalisePhone(phone);
+  const url = `/users/status?phone=${normalised}`;
+
+  logger.info('OWO checkUserStatus: request', {
+    phoneRaw:    phone,
+    phoneNorm:   normalised,
+    url:         `${OWO_BASE}${url}`,
+    authPresent: !!env.MONO_SECRET_KEY,
+  });
+
   try {
-    const normalised = normalizePhone(phone);
-    const { ok, status, data } = await owoFetch(`/users/status?phone=${normalised}`);
+    const { ok, status, data } = await owoFetch(url);
+
+    logger.info('OWO checkUserStatus: response', {
+      httpStatus:   status,
+      ok,
+      responseBody: data,
+    });
 
     if (!ok) {
-      if (status === 404) return 'NOT_FOUND';
-      logger.warn('OWO checkUserStatus non-200', { status });
+      if (status === 404) {
+        logger.info('OWO checkUserStatus: 404 — number not registered', { phoneNorm: normalised });
+        return 'NOT_FOUND';
+      }
+      logger.warn('OWO checkUserStatus: non-200 response', { status, body: data });
       return 'NOT_FOUND';
     }
 
-    const payload = data as { status?: string };
-    const s = (payload?.status ?? '').toUpperCase();
+    // NOTE: Mono OWO wraps the payload in a `data` envelope:
+    //   { data: { status: 'ACTIVE' | 'PENDING_ACTIVATION', phone: '...' } }
+    // Reading `payload.status` directly always yields undefined → NOT_FOUND.
+    const payload = data as { data?: { status?: string } };
+    const s = (payload?.data?.status ?? '').toUpperCase();
+
+    logger.info('OWO checkUserStatus: parsed status', { rawStatus: payload?.data?.status, normalised: s });
 
     if (s === 'ACTIVE')             return 'ACTIVE';
     if (s === 'PENDING_ACTIVATION') return 'PENDING_ACTIVATION';
+
+    // Unexpected status value — log the full payload so it can be diagnosed
+    logger.warn('OWO checkUserStatus: unrecognised status value', { s, payload });
     return 'NOT_FOUND';
   } catch (err) {
-    logger.warn('OWO checkUserStatus error — degrading gracefully', {
-      error: (err as Error).message,
+    // Log in full — swallowing silently hid this class of error previously
+    logger.error('OWO checkUserStatus: caught error — degrading to NOT_FOUND', {
+      error:     (err as Error).message,
+      stack:     (err as Error).stack,
+      phoneNorm: normalised,
     });
     return 'NOT_FOUND';
   }
@@ -156,7 +197,7 @@ export async function linkVendorBeneficiary(
   const { ok, status, data } = await owoFetch('/beneficiaries/link', {
     method: 'POST',
     body: {
-      phone:          normalizePhone(phone),
+      phone:          normalisePhone(phone),
       bvn,
       account_name:   accountName,
       nip_code:       nipCode,
@@ -206,7 +247,7 @@ export async function initiatePayment(
     method: 'POST',
     body: {
       type:        'onetime',
-      phone:       normalizePhone(phone),
+      phone:       normalisePhone(phone),
       reference:   orderId,
       amount:      amountKobo,
       currency:    'NGN',
